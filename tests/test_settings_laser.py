@@ -5,19 +5,44 @@ from zapit import settings as s
 from zapit.laser import LaserCalibration, LaserFit
 
 
-def test_validate_fills_renames_and_drops():
-    raw = {"NI": {"device_ID": "Dev3", "wrapper": "dotnet", "samplesPerSecond": 50000.0},
-           "experiment": {"defaultLaserFrequencyHz": 20},
-           "tcpServer": {"port": 1488},
+def test_validate_fills_and_drops():
+    raw = {"NI": {"device_ID": "Dev3", "unknownKey": 1, "samplesPerSecond": 50000.0},
+           "unknownSection": {"port": 1488},
            "camera": {"flipImageUD": 1.0}}
     out, valid = s.validate(raw)
     assert not valid
-    assert out["NI"]["device_ID"] == "Dev3" and "wrapper" not in out["NI"]
+    assert out["NI"]["device_ID"] == "Dev3" and "unknownKey" not in out["NI"]
     assert out["NI"]["samplesPerSecond"] == 50000
-    assert out["experiment"]["defaultLaserModulationFrequencyHz"] == 20
-    assert "tcpServer" not in out
+    assert "unknownSection" not in out
     assert out["camera"]["flipImageUD"] is True
     assert s.validate(s.default_settings())[1]
+
+
+def test_test_settings_file_is_valid(data_dir):
+    assert s.validate(yaml.safe_load((data_dir / "settings_test.yml").read_text()))[1]
+
+
+def test_recent_list_in_another_shape_is_reset_not_crashing():
+    raw = s.default_settings()
+    raw["cache"]["previouslyLoadedFiles"] = [["C:/a.yml", 739000.5]]
+    out, valid = s.validate(raw)
+    assert not valid and out["cache"]["previouslyLoadedFiles"] is None
+
+
+def test_settings_search_is_home_or_env_only(monkeypatch, tmp_path):
+    monkeypatch.delenv(s.ENV_VAR, raising=False)
+    assert s.possible_settings_dirs() == [s.Path.home() / "ZapitSettings"]
+    monkeypatch.setenv(s.ENV_VAR, str(tmp_path / "x.yml"))
+    assert s.possible_settings_dirs()[0] == tmp_path
+
+
+def test_unedited_default_detection():
+    d = s.default_settings()
+    assert s.is_unedited_default(d)
+    d["cache"]["ROI"] = [0, 0, 10, 10]
+    assert s.is_unedited_default(d)          # cache is runtime state, not an edit
+    d["camera"]["micronsPerPixel"] = 11.7
+    assert not s.is_unedited_default(d)
 
 
 def test_load_writes_back_and_backs_up(tmp_path):

@@ -1,8 +1,8 @@
 """National Instruments DAQ backend via the nidaqmx package (NI-DAQmx driver required).
 
-Mirrors the upstream .NET wrapper: one AO task at a time, regeneration allowed,
-rising-edge start trigger on the configured PFI line when requested, and an
-optional clocked DO task on port0/line0 sharing the AO sample clock.
+One clocked AO task at a time, regeneration allowed, rising-edge start trigger
+on the configured PFI line when requested, and an optional clocked DO task on
+port0/line0 sharing the AO sample clock.
 """
 from __future__ import annotations
 
@@ -11,15 +11,25 @@ import numpy as np
 from zapit.hardware.daq import AO_RANGE_VOLTS, N_AO, DAQ
 
 
+def trigger_terminal(device: str, channel: str) -> str:
+    """Full terminal name for the start trigger: ``PFI0``, ``Dev1/PFI0`` and ``/Dev1/PFI0`` all give ``/Dev1/PFI0``."""
+    channel = str(channel).strip().strip("/")
+    if not channel:
+        raise ValueError("NI.triggerChannel is empty")
+    if "/" in channel:
+        return "/" + channel
+    return f"/{device}/{channel}"
+
+
 class NIDAQ(DAQ):
     def __init__(self, settings: dict):
         super().__init__(settings)
         import nidaqmx  # noqa: F401  (fail early if the driver is missing)
-        from nidaqmx.constants import AcquisitionType, RegenerationMode  # noqa: F401
         self._ao = None
         self._ao_writer = None
         self._ao_task_name = None
         self._ao_mode: str | None = None
+        self._ao_rate: float | None = None
         self._unclocked = None
         self._unclocked_writer = None
         self._do = None
@@ -32,16 +42,31 @@ class NIDAQ(DAQ):
     def _ao_channels(self) -> str:
         return ",".join(f"{self.device}/ao{i}" for i in range(N_AO))
 
-    def _ensure_unclocked(self):
+    @staticmethod
+    def _build_task(name: str, configure):
+        """Create task ``name`` and run ``configure(task)`` on it. If configuring raises, the
+        task is closed first, so a retry does not collide with a half-built task of that name."""
         import nidaqmx
+        t = nidaqmx.Task(name)
+        try:
+            configure(t)
+        except BaseException:
+            t.close()
+            raise
+        return t
+
+    def _ensure_unclocked(self):
         from nidaqmx.stream_writers import AnalogMultiChannelWriter
         if self._unclocked is not None:
             return
         self.clear_ao()
-        t = nidaqmx.Task("zapit_unclocked_ao")
-        t.ao_channels.add_ao_voltage_chan(self._ao_channels(), min_val=-AO_RANGE_VOLTS, max_val=AO_RANGE_VOLTS)
+
+        def configure(t):
+            t.ao_channels.add_ao_voltage_chan(self._ao_channels(), min_val=-AO_RANGE_VOLTS, max_val=AO_RANGE_VOLTS)
+            t.start()  # started once, so each write updates the lines without an implicit start and stop
+        t = self._build_task("zapit_unclocked_ao", configure)
         self._unclocked = t
-        self._unclocked_writer = AnalogMultiChannelWriter(t.out_stream, auto_start=True)
+        self._unclocked_writer = AnalogMultiChannelWriter(t.out_stream, auto_start=False)
 
     def _drop_unclocked(self):
         if self._unclocked is not None:
@@ -64,13 +89,19 @@ class NIDAQ(DAQ):
             self.last_unclocked = v.copy()
 
     def read_analog(self, channel: int = 0) -> float:
-        import nidaqmx
+        from nidaqmx.constants import TerminalConfiguration
         with self.lock:
             if self._ai is None or self._ai_channel != channel:
                 if self._ai is not None:
                     self._ai.close()
-                self._ai = nidaqmx.Task("zapit_ai")
-                self._ai.ai_channels.add_ai_voltage_chan(f"{self.device}/ai{channel}")
+                    self._ai = None
+                    self._ai_channel = None
+
+                def configure(t):
+                    t.ai_channels.add_ai_voltage_chan(
+                        f"{self.device}/ai{channel}", terminal_config=TerminalConfiguration.DIFF,
+                        min_val=-AO_RANGE_VOLTS, max_val=AO_RANGE_VOLTS)
+                self._ai = self._build_task("zapit_ai", configure)
                 self._ai_channel = channel
             val = self._ai.read()
         return float(val)
@@ -92,21 +123,28 @@ class NIDAQ(DAQ):
             same = (self._ao is not None and self._ao_task_name == task_name and self._ao_mode == mode
                     and self._ao_rate == rate)
             if same:
-                if mode == "finite":
-                    self._ao.stop()
-                    self._ao.timing.samp_quant_samp_per_chan = w.shape[0]
+                # A reused task is stopped (with its DO) even when continuous, so start() later
+                # starts DO before AO and both begin on the same AO sample clock edge.
+                self._ao.stop()
+                if self._do is not None:
+                    self._do.stop()
+                self._ao.timing.samp_quant_samp_per_chan = w.shape[0]
             else:
                 self.clear_ao()
-                t = nidaqmx.Task(task_name)
-                t.ao_channels.add_ao_voltage_chan(self._ao_channels(), min_val=-AO_RANGE_VOLTS, max_val=AO_RANGE_VOLTS)
-                t.timing.cfg_samp_clk_timing(
-                    rate, active_edge=Edge.RISING,
-                    sample_mode=AcquisitionType.FINITE if finite else AcquisitionType.CONTINUOUS,
-                    samps_per_chan=w.shape[0])
-                t.out_stream.regen_mode = RegenerationMode.ALLOW_REGENERATION
-                if hardware_triggered:
-                    t.triggers.start_trigger.cfg_dig_edge_start_trig(f"/{self.device}/{self.trigger_channel}", Edge.RISING)
-                t.control(nidaqmx.constants.TaskMode.TASK_VERIFY)
+
+                def configure(t):
+                    t.ao_channels.add_ao_voltage_chan(self._ao_channels(), min_val=-AO_RANGE_VOLTS,
+                                                      max_val=AO_RANGE_VOLTS)
+                    t.timing.cfg_samp_clk_timing(
+                        rate, active_edge=Edge.RISING,
+                        sample_mode=AcquisitionType.FINITE if finite else AcquisitionType.CONTINUOUS,
+                        samps_per_chan=w.shape[0])
+                    t.out_stream.regen_mode = RegenerationMode.ALLOW_REGENERATION
+                    if hardware_triggered:
+                        t.triggers.start_trigger.cfg_dig_edge_start_trig(
+                            trigger_terminal(self.device, self.trigger_channel), Edge.RISING)
+                    t.control(nidaqmx.constants.TaskMode.TASK_VERIFY)
+                t = self._build_task(task_name, configure)
                 self._ao = t
                 self._ao_writer = AnalogMultiChannelWriter(t.out_stream, auto_start=False)
                 self._ao_task_name = task_name
@@ -127,19 +165,20 @@ class NIDAQ(DAQ):
             self.last_waveform = w.copy()
 
     def prepare_do(self, bits, *, rate=None, finite=False, task_name="stim_do"):
-        import nidaqmx
         from nidaqmx.constants import AcquisitionType, Edge, LineGrouping
         from nidaqmx.stream_writers import DigitalSingleChannelWriter
         b = np.asarray(bits).astype(bool)
         rate = float(rate or self.sample_rate)
         with self.lock:
             self.clear_do()
-            t = nidaqmx.Task(task_name)
-            t.do_channels.add_do_chan(f"{self.device}/port0/line0", line_grouping=LineGrouping.CHAN_FOR_ALL_LINES)
-            t.timing.cfg_samp_clk_timing(
-                rate, source=f"/{self.device}/ao/SampleClock", active_edge=Edge.RISING,
-                sample_mode=AcquisitionType.FINITE if finite else AcquisitionType.CONTINUOUS,
-                samps_per_chan=len(b))
+
+            def configure(t):
+                t.do_channels.add_do_chan(f"{self.device}/port0/line0", line_grouping=LineGrouping.CHAN_FOR_ALL_LINES)
+                t.timing.cfg_samp_clk_timing(
+                    rate, source=f"/{self.device}/ao/SampleClock", active_edge=Edge.RISING,
+                    sample_mode=AcquisitionType.FINITE if finite else AcquisitionType.CONTINUOUS,
+                    samps_per_chan=len(b))
+            t = self._build_task(task_name, configure)
             self._do = t
             self._do_writer = DigitalSingleChannelWriter(t.out_stream, auto_start=False)
             self._do_writer.write_many_sample_port_uint32(b.astype(np.uint32))
@@ -169,6 +208,7 @@ class NIDAQ(DAQ):
                     self._ao_writer = None
                     self._ao_task_name = None
                     self._ao_mode = None
+                    self._ao_rate = None
                     self.last_waveform = None
 
     def clear_do(self):
@@ -187,6 +227,11 @@ class NIDAQ(DAQ):
     def is_ao_done(self) -> bool:
         with self.lock:
             return True if self._ao is None else bool(self._ao.is_task_done())
+
+    def has_started(self) -> bool:
+        # Samples generated stays 0 while a triggered task waits for its edge.
+        with self.lock:
+            return self._ao is not None and int(self._ao.out_stream.total_samp_per_chan_generated) > 0
 
     def close(self):
         super().close()

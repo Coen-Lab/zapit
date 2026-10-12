@@ -6,8 +6,11 @@ samples. Within a cycle the beam visits each point of the condition in turn; the
 scanner command is boxcar-smoothed over the blanking window and the laser and
 LED are gated off while the mirrors move.
 
-This is a faithful port of the upstream MATLAB ``stimConfig.chanSamples`` so
-waveforms are identical sample for sample (see tests/test_waveforms.py).
+The output is locked sample for sample to tests/data/chan_samples_reference.npz
+(tests/test_waveforms.py); changing it is a deliberate behaviour change.
+
+The continuous-stimulus ramp-down steps the laser amplitude down linearly, one
+step per buffer (``rampdown_buffers``).
 """
 from __future__ import annotations
 
@@ -59,7 +62,7 @@ def unpresentable_conditions(points_per_condition: list[int], rate: float, modul
 
 
 def _smooth_scanner(seq: np.ndarray, n: int, blank: int) -> np.ndarray:
-    """Boxcar-smooth a stepped scanner sequence the way the upstream code does."""
+    """Boxcar-smooth a stepped scanner sequence over the blanking window."""
     if blank <= 0:
         return seq[:n]
     kernel = np.ones(blank) / blank
@@ -122,7 +125,7 @@ def ephys_waveform(gate: np.ndarray) -> np.ndarray:
     """Replace square laser-on epochs with half-sinusoids of equal area (reduces artefacts).
 
     The returned waveform peaks above 1, so the caller must scale laser power by
-    its peak. Port of upstream ``filterForEphys`` ('sine' mode).
+    its peak.
     """
     gate = np.asarray(gate, dtype=float)
     n_cycles = int(np.sum(np.diff(gate) == 1))

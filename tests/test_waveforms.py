@@ -1,4 +1,4 @@
-"""Waveforms must match the upstream MATLAB output sample for sample."""
+"""Waveforms must match the locked reference data sample for sample."""
 import numpy as np
 import pytest
 

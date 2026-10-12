@@ -80,6 +80,10 @@ class DAQ(ABC):
     @abstractmethod
     def is_ao_done(self) -> bool: ...
 
+    @abstractmethod
+    def has_started(self) -> bool:
+        """True once the clocked AO task has generated samples (after its trigger, if any)."""
+
     def is_finite_playing(self) -> bool:
         return self.ao_mode() == "finite" and not self.is_ao_done()
 
@@ -195,6 +199,9 @@ class SimulatedDAQ(DAQ):
 
     def ao_mode(self):
         return self._mode
+
+    def has_started(self) -> bool:
+        return self._armed and self._started_at is not None
 
     def is_ao_done(self) -> bool:
         if self._mode is None or not self._armed:

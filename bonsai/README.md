@@ -1,6 +1,6 @@
 # Bonsai example: driving Zapit trials
 
-`Zapit.bonsai` is a minimal Bonsai workflow that runs Zapit trials over its ZeroMQ server and fires the hardware trigger from a Harp Behavior board. Each trial is two steps: a JSON request arms the DAQ with a random condition, then a 5 ms pulse on the Harp board's DO0 line, wired to the DAQ's PFI0, starts the stimulus at the moment the task needs it. The protocol itself is documented for any client in [`docs/bonsai.md`](../docs/bonsai.md).
+`Zapit.bonsai` is a minimal Bonsai workflow that runs Zapit trials over its ZeroMQ server and fires the hardware trigger from a Harp Behavior board. Each trial is two steps: in the inter-trial interval a JSON request arms the DAQ with a random condition, then at stimulus onset a 5 ms pulse on the Harp board's DO0 line, wired to the DAQ's PFI0, starts the stimulus. Arming takes tens of milliseconds, so only the TTL happens at the time-critical moment. The protocol itself is documented for any client in [`docs/bonsai.md`](../docs/bonsai.md).
 
 ## Layout
 
@@ -40,7 +40,7 @@ Then open the workflow by starting `.bonsai/Bonsai.exe` and choosing File, Open,
 
 | Property              | Default                 | Meaning                                                                          |
 |-----------------------|-------------------------|----------------------------------------------------------------------------------|
-| `ZapitAddress`        | `tcp://localhost:5555`  | Zapit server endpoint. The server binds `tcp://*:5555`; use the host name across a network |
+| `ZapitAddress`        | `tcp://localhost:5555`  | Zapit server endpoint. The server binds `tcp://127.0.0.1:5555` by default; to reach it from another machine set `server.bind` to `tcp://*:5555` and use the host name here |
 | `StimDurationSeconds` | `1.5`                   | `stim_duration_s` sent with every trial. `-1` means continuous until stop         |
 | `PortName`            | `COM3`                  | Serial port of the Harp Behavior board (Device Manager, Ports (COM & LPT))        |
 | `LogFileName`         | `zapit_replies.csv`     | CSV of every reply, with a Bonsai timestamp. Appended, relative to the workflow folder |
@@ -49,10 +49,11 @@ Then open the workflow by starting `.bonsai/Bonsai.exe` and choosing File, Open,
 
 ## Running
 
-1. Start Zapit, calibrate the scanners and the sample, load a stimulus config. The server starts with the GUI and prints `Zapit server listening on tcp://*:5555`.
+1. Start Zapit, calibrate the scanners and the sample, load a stimulus config. The server starts with the GUI when `server.enable` is true (the default) and prints `Zapit server listening on tcp://127.0.0.1:5555`.
 2. Start the workflow (the green play button).
-3. Press **Space**. The workflow sends `send_samples` with a random condition and random laser state, logs the reply, and if the reply is a successful arm it pulses DO0 for 5 ms. The stimulus starts on that rising edge and runs for `StimDurationSeconds`.
-4. For a continuous stimulus set `StimDurationSeconds` to `-1`, press Space to start it, and press **S** to send `stop`, which ramps the laser down.
+3. Press **Space** (the stand-in for the inter-trial interval). The workflow sends `send_samples` with a random condition and random laser state and logs the reply. A successful reply means the DAQ is armed and waiting for the TTL.
+4. Press **T** (the stand-in for stimulus onset). The workflow pulses DO0 for 5 ms. The stimulus starts on that rising edge and runs for `StimDurationSeconds`.
+5. For a continuous stimulus set `StimDurationSeconds` to `-1`, press Space then T to start it, and press **S** to send `stop`, which ramps the laser down. `stop` on a trial that is armed but not yet triggered cancels it.
 
 Keyboard events reach the `KeyDown` nodes whichever window has focus, so there is no need to click into Bonsai first.
 
@@ -66,7 +67,7 @@ Keyboard events reach the `KeyDown` nodes whichever window has focus, so there i
 
 DO0 is a 5 V digital output and PFI0 is 5 V TTL tolerant, so no level shifting is needed. If DO0 is already in use, change `OutputSet` and `OutputClear` in the `TriggerPulse` group to DO1, DO2 or DO3 (the DOPortN lines on the RJ45 ports also work).
 
-The pulse is 5 ms high then low, timed in software with an `rx:Delay`. Only the rising edge matters to Zapit, so jitter on the falling edge is harmless. The rising edge itself is sent as a single Harp write as soon as the reply arrives, so its latency is one USB round trip after the reply, typically under a millisecond. If you need a hardware-timed pulse width, write `PulseDO0` (duration in ms) and `OutputPulseEnable` (DO0) once at startup and the board times every subsequent `OutputSet` itself.
+The pulse is 5 ms high then low, timed in software with an `rx:Delay`. Only the rising edge matters to Zapit, so jitter on the falling edge is harmless. The rising edge itself is sent as a single Harp write as soon as the onset event arrives, so its latency is one USB round trip after the onset, typically under a millisecond. If you need a hardware-timed pulse width, write `PulseDO0` (duration in ms) and `OutputPulseEnable` (DO0) once at startup and the board times every subsequent `OutputSet` itself.
 
 ## How the workflow is built
 
@@ -74,14 +75,14 @@ Two groups, wired by edges inside and by one subject between them. Everything a 
 
 `ZapitClient`:
 
-1. `KeyDown` (Space) combined with the `StimDurationSeconds` property by `WithLatestFrom`, then a `Format` node builds the request string `{"cmd":"send_samples","condition":null,"laser_on":null,"hardware_triggered":true,"stim_duration_s":1.5}`.
+1. `KeyDown` (Space, the inter-trial stand-in) combined with the `StimDurationSeconds` property by `WithLatestFrom`, then a `Format` node builds the request string `{"cmd":"send_samples","condition":null,"laser_on":null,"hardware_triggered":true,"stim_duration_s":1.5}`.
 2. `KeyDown` (S) feeds a second `Format` node that emits `{"cmd":"stop"}`.
 3. Both are merged into one `Request` node (one REQ socket, `ConnectionString` externalized as `ZapitAddress`). It returns a `NetMQMessage`; `MemberSelector First` takes its only frame and `ConvertToString` decodes it.
-4. The reply string goes through `Timestamp` into `CsvWriter` (two columns, `Timestamp` and `Value`), and separately into a `Condition` named `ArmedOk`, which passes only replies that contain `"condition"` and not `"error"`, so stop replies and errors never fire the trigger. The survivors are published as the `ZapitArmed` subject.
+4. The reply string goes through `Timestamp` into `CsvWriter` (two columns, `Timestamp` and `Value`), and separately into a `Condition` named `ArmedOk`, which passes only replies that contain `"condition"` and not `"error"`, so stop replies and errors never enable the trigger. The survivors are published as the `ZapitArmed` subject.
 
 `TriggerPulse`:
 
-1. `SubscribeSubject ZapitArmed`.
+1. `KeyDown` (T, the onset stand-in) as `Source1` of a `WithLatestFrom`, with `SubscribeSubject ZapitArmed` as `Source2`. It emits on each onset once at least one armed reply has been seen, and never on the reply itself.
 2. `CreateMessage` with `CreateOutputSetPayload` DO0, and in parallel the same event delayed 5 ms into `CreateMessage` with `CreateOutputClearPayload` DO0.
 3. Both merged into the Harp `Device` node, whose `PortName` is externalized.
 
@@ -89,12 +90,17 @@ A `Format` node uses `String.Format`, so the number formatting follows the Windo
 
 ## Swapping the KeyDown for a real task event
 
-The annotation node inside `ZapitClient` marks the spot. Delete the Space `KeyDown` and connect your trial-start source to the `WithLatestFrom` node as `Source1`. Any observable works, since the value is discarded and only the timing is used. The normal shape in a task is a `SubscribeSubject` carrying the trial-start or stimulus-onset event from the task's own workflow, or an `IncludeWorkflow` of this file into the task with `ZapitArmed` subscribed from the task side.
+There are two plug-in points, each marked by an annotation node:
+
+- In `ZapitClient`, delete the Space `KeyDown` and connect an inter-trial event (the end of the previous trial, say) to its `WithLatestFrom` node as `Source1`. This arms the next trial.
+- In `TriggerPulse`, delete the T `KeyDown` and connect your stimulus-onset event to its `WithLatestFrom` node as `Source1`. This fires only the TTL.
+
+Any observable works at either point, since the value is discarded and only the timing is used. The normal shape in a task is a `SubscribeSubject` carrying the event from the task's own workflow, or an `IncludeWorkflow` of this file into the task.
 
 Two timing facts to design around:
 
-- The `send_samples` request takes a few tens of milliseconds end to end (ZeroMQ round trip plus loading the waveforms into the DAQ). Arm during the inter-trial interval, not at stimulus onset.
-- The pulse fires as soon as the reply comes back. If you want the stimulus to start at a later event rather than immediately after arming, split the groups: arm on the inter-trial event, and move the `SubscribeSubject ZapitArmed` in `TriggerPulse` to a `Zip` of the armed reply with your onset event, so the pulse waits for both.
+- The `send_samples` request takes a few tens of milliseconds end to end (ZeroMQ round trip plus loading the waveforms into the DAQ). Arming at stimulus onset would delay the TTL by all of that, which is why the example arms in the inter-trial interval.
+- The arm must finish before the onset. If the onset comes first, the pulse reaches a DAQ that is not armed and nothing plays; the late arm then waits for the next onset. `WithLatestFrom` is used rather than `Zip` for this reason: a `Zip` would hold an early onset and pulse the moment the late reply arrived, starting the stimulus at the wrong time.
 
 `stop` is only needed for continuous stimuli (`stim_duration_s` of `-1`). A finite trial ramps itself down.
 

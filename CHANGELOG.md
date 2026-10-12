@@ -20,21 +20,34 @@ software version lives in pyproject.toml; this file is a record only.
 
 
 ### 2026/10/12 v2.0.0
-Python rewrite by the Coen Lab (UCL). MATLAB is no longer required.
+Python rewrite by the Coen Lab (UCL).
 
-  * BREAKING: the application is a Python package (`uv run zapit gui`). The MATLAB API, the
-    App Designer GUIs, the .NET DAQmx wrapper, the TCP byte protocol, the shared-memory Python
-    bridge, the update checker and the support-report tool are removed.
+  * BREAKING: the application is a Python package (`uv run zapit gui`). The previous API and
+    GUIs, the DAQmx wrapper, the TCP byte protocol, the shared-memory Python bridge, the update
+    checker and the support-report tool are removed.
   * Hardware through nidaqmx (NI) and pypylon (Basler) behind interfaces with simulated twins;
     the whole calibration and trial flow runs headless in simulated mode and is covered by tests.
-  * Waveforms are identical to v1.0.4 sample for sample (regression test against MATLAB output).
-  * Stimulus config YAML files load unchanged. Settings YAML files load unchanged; obsolete
-    keys are dropped with a backup. The laser fit is stored as `laserFit.yml`.
-  * New ZeroMQ REQ/REP JSON server (`zapit/server.py`) and Python client; an example Bonsai
-    workflow arms trials and fires the trigger from a Harp board.
+  * Waveforms are identical to v1.0.4 sample for sample (locked reference data). The
+    continuous-stimulus ramp-down now steps the laser down linearly, one step per buffer.
+  * BREAKING: files are read only in their current formats. `scripts/migrate_rig.py` converts a
+    1.x rig once: settings (renamed keys, recent-configs list, camera index now 0-based), the
+    laser fit (`laserFit.mat` refitted into `laserFit.yml`) and stimulus configs that store the
+    modulation frequency per condition. Settings are found in `ZAPIT_SETTINGS` or
+    `%USERPROFILE%\ZapitSettings` only.
+  * A rig refuses to stimulate while its settings file still equals the shipped defaults.
+  * New ZeroMQ REQ/REP JSON server (`zapit/server.py`) and Python client, bound to
+    `tcp://127.0.0.1:5555` by default and started only when `server.enable` is true. The example
+    Bonsai workflow arms trials in the inter-trial interval and fires only the TTL at onset.
+  * Trial safety: on-demand beam and laser writes and check patterns are refused while a trial is
+    armed or playing; `stop` disarms a finite trial that was never triggered; a late ramp-down stop
+    can no longer kill the next trial; laser and scanners are set to 0 V after a stop; the ephys
+    waveform is capped at the laser's maximum control voltage; a scanner calibration with a mean
+    residual above 100 um is rejected.
   * New PyQt6 GUI: live camera with mm axes, scanner and sample calibration, check patterns,
     laser calibration dialog, and the atlas stimulus config editor.
-  * Trial logs are `.csv` files with an added `laser_on` column.
+  * Trial logs are `.csv` files with an added `laser_on` column and millisecond timestamps,
+    written only once the DAQ accepts the trial. Each config gets its own parameter log and trials
+    file; the parameter log records the config's absolute path.
   * CLI: `zapit gui`, `zapit server`, `zapit pattern`, `zapit check-config`.
 
 ### 2026/08/16 v1.0.4

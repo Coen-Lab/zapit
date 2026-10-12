@@ -1,8 +1,9 @@
 """Stimulus-config editor window: click on a top-down atlas to build conditions.
 
-``StimConfigEditor`` reproduces the upstream MATLAB editor. A list of
-``zapit.stim_config.Condition`` objects is the single source of truth; the plot
-is redrawn from it after every change. Mouse handling on the plot:
+``StimConfigEditor`` builds a stimulus config by clicking on a top-down atlas.
+A list of ``zapit.stim_config.Condition`` objects is the single source of
+truth; the plot is redrawn from it after every change. Mouse handling on the
+plot:
 
 * click: new condition at the cursor (bilateral adds the mirrored point too)
 * shift+click (unilateral): append the point to the last condition
@@ -12,6 +13,10 @@ Laser power and ramp-down are per-condition attributes edited through one
 spinbox each. When a loaded file has values that differ across conditions the
 spinbox is disabled and the loaded values are kept; new conditions take the
 value shown. Modulation frequency is one value for the whole file.
+
+Saving from the Save or Save As button asks first (default No) when any point
+lies outside the brain, naming the conditions concerned. Load failures of any
+kind are shown in a dialog and leave the editor as it was.
 """
 from __future__ import annotations
 
@@ -27,7 +32,7 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, Q
 
 from zapit.atlas import load_atlas
 from zapit.gui.atlas_view import DELETE_COLOUR, ENLARGED_SIZE, AtlasView, condition_style
-from zapit.stim_config import Condition, StimConfig, pattern_conditions
+from zapit.stim_config import Condition, StimConfig, StimConfigError, pattern_conditions
 
 PATTERNS = ("grid", "cross", "mlline", "apline")
 
@@ -80,7 +85,7 @@ class StimConfigEditor(QMainWindow):
         self._build_ui()
         self._update_label()
         if path is not None:
-            self.load_path(path)
+            self.try_load(path)
 
     # ------------------------------------------------------------------ construction
     def _build_ui(self) -> None:
@@ -113,6 +118,7 @@ class StimConfigEditor(QMainWindow):
         self.new_button.setToolTip("Wipe any existing points and start over.")
         self.load_button.setToolTip("Load an existing stim config file from disk.")
         self.save_button.setToolTip("Save the current points to a stim config file.")
+        self.save_as_button.setToolTip("Save the current points to a new stim config file.")
         self.pattern_button.setToolTip("Append a grid, cross or line of single-point conditions.")
         self.new_button.clicked.connect(self.new_config)
         self.load_button.clicked.connect(self.load_dialog)
@@ -270,6 +276,30 @@ class StimConfigEditor(QMainWindow):
             self._warn("Per-condition values", "\n".join(lines))
         return cfg
 
+    def try_load(self, path: str | Path) -> StimConfig | None:
+        """``load_path`` that reports every failure in a dialog instead of raising."""
+        try:
+            return self.load_path(path)
+        except (StimConfigError, OSError) as e:
+            self._warn("Config not loaded", f"{Path(path).name} was not loaded:\n{e}")
+        except Exception as e:  # any other failure is reported, never allowed to abort the event loop
+            self._warn("Config not loaded", f"{Path(path).name} was not loaded:\n{type(e).__name__}: {e}")
+        return None
+
+    def outside_brain_conditions(self) -> list[int]:
+        """1-based numbers of the conditions with at least one point outside the brain."""
+        return [i + 1 for i, c in enumerate(self._conditions) if "" in c.area_names]
+
+    def _accept_outside_brain(self) -> bool:
+        """True to go ahead with saving: no point is outside the brain, or the user says Yes."""
+        bad = self.outside_brain_conditions()
+        if not bad:
+            return True
+        names = ", ".join(str(n) for n in bad)
+        noun, verb = ("Condition", "has") if len(bad) == 1 else ("Conditions", "have")
+        return self._confirm("Points outside the brain",
+                             f"{noun} {names} {verb} points outside the brain. Save anyway?")
+
     def save_to(self, path: str | Path) -> Path:
         cfg = self.to_stim_config()
         path = cfg.save(path)
@@ -288,7 +318,7 @@ class StimConfigEditor(QMainWindow):
         start = str(self._path.parent) if self._path else ""
         name, _ = QFileDialog.getOpenFileName(self, "Load stim config", start, "YAML (*.yml *.yaml)")
         if name:
-            self.load_path(name)
+            self.try_load(name)
 
     def save(self) -> None:
         if not self._conditions:
@@ -296,19 +326,28 @@ class StimConfigEditor(QMainWindow):
             return
         if self._path is None:
             self.save_as()
-        else:
-            self.save_to(self._path)
+        elif self._accept_outside_brain():
+            self._save_reporting(self._path)
 
     def save_as(self) -> None:
         if not self._conditions:
             self._warn("Nothing to save", "Add at least one condition first.")
+            return
+        if not self._accept_outside_brain():
             return
         start = str(self._path) if self._path else ""
         name, _ = QFileDialog.getSaveFileName(self, "Save stim config", start, "YAML (*.yml)")
         if name:
             if not name.lower().endswith((".yml", ".yaml")):
                 name += ".yml"
-            self.save_to(name)
+            self._save_reporting(name)
+
+    def _save_reporting(self, path: str | Path) -> Path | None:
+        try:
+            return self.save_to(path)
+        except (StimConfigError, OSError) as e:
+            self._warn("Config not saved", f"{Path(path).name} was not saved:\n{e}")
+        return None
 
     def pattern_dialog(self) -> None:
         dlg = PatternDialog(self)

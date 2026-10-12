@@ -22,6 +22,7 @@ class ModelBridge(QObject):
     calibration_point = pyqtSignal(object)
     experiment_path = pyqtSignal(object)
     settings = pyqtSignal(object)
+    server_error = pyqtSignal(str)   # fed by ZapitServer.on_error, connected by the window
 
     NAMES = ("state", "stim_config", "scanners_calibrated", "sample_calibrated",
              "calibration_point", "experiment_path", "settings")

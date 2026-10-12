@@ -9,8 +9,9 @@ import time
 def _add_common(p: argparse.ArgumentParser):
     p.add_argument("--simulated", action="store_true", help="no hardware: simulated camera and DAQ")
     p.add_argument("--settings", default=None, help="explicit settings YAML (never rewritten)")
-    p.add_argument("--no-server", action="store_true", help="do not start the ZeroMQ server")
-    p.add_argument("--bind", default=None, help="server bind address, e.g. tcp://*:5555")
+    p.add_argument("--no-server", action="store_true",
+                   help="do not start the ZeroMQ server (it also stays off when server.enable is false)")
+    p.add_argument("--bind", default=None, help="server bind address, e.g. tcp://*:5555 (default server.bind)")
 
 
 def main(argv=None):
@@ -54,10 +55,19 @@ def _server(args):
     from zapit.pointer import Zapit
     from zapit.server import ZapitServer
     model = Zapit(simulated=args.simulated, settings_path=args.settings)
-    if args.config:
-        model.load_stim_config(args.config)
-    server = ZapitServer(model, args.bind)
-    server.start()
+    if args.no_server or not model.settings["server"]["enable"]:
+        why = "--no-server was given" if args.no_server else "server.enable is false in the settings"
+        print(f"Not starting: the headless mode only runs the server, and {why}")
+        model.close()
+        return 1
+    try:
+        if args.config:
+            model.load_stim_config(args.config)
+        server = ZapitServer(model, args.bind)
+        server.start()
+    except Exception:
+        model.close()
+        raise
     print("Running headless. Ctrl-C to quit.")
     try:
         while True:

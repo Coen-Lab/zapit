@@ -1,6 +1,10 @@
 # Settings
 
-The settings file is `zapitSystemSettings.yml`. It is looked for in this order: the path in the `ZAPIT_SETTINGS` environment variable, `%USERPROFILE%\ZapitSettings\`, `C:\ZapitSettings\`. If none exists a default is written to the first location. The file is validated on every load: unknown keys are dropped, missing keys filled from defaults and invalid values replaced, with a backup in a `backups/` folder beside it. A file passed with `--settings` is never rewritten. The GUI writes changes back as you make them.
+The settings file is `zapitSystemSettings.yml`. It is looked for in the folder named by the `ZAPIT_SETTINGS` environment variable, then in `%USERPROFILE%\ZapitSettings\`. If none exists a default is written to the first of those. The defaults are placeholders: on real hardware Zapit refuses to stimulate (trials and check patterns) until at least one rig value in the file differs from them, so edit it first, then restart. The `cache` section does not count as an edit. The file is validated on every load: unknown keys are dropped, missing keys filled from defaults and invalid values replaced, with a backup in a `backups/` folder beside it. A file passed with `--settings` is never rewritten. The GUI writes changes back as you make them.
+
+The laser fit lives beside it as `laserFit.yml`. Without one, power is mapped linearly between `laserMinMaxControlVolts` and `laserMinMax_mW`, and Zapit says so at start-up.
+
+To bring over a rig's files from Zapit 1.x (settings, laser fit, recent configs, stimulus configs that store the modulation frequency per condition), run `uv run python scripts/migrate_rig.py` once; `--help` lists the options. Zapit itself reads only the current formats and stops with a message naming the script if it finds an unconverted `laserFit.mat`.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -16,7 +20,7 @@ The settings file is `zapitSystemSettings.yml`. It is looked for in this order: 
 | `laser.laserMinMax_mW` | [0, 75] | Power at the sample at those voltages |
 | `laser.maxValueInGUI` | 30 | Upper limit of the GUI power slider |
 | `camera.backend` | basler | `basler` only, for now |
-| `camera.connectionIndex` | 0 | Which camera when several are attached |
+| `camera.connectionIndex` | 0 | Which camera when several are attached, counting from 0 |
 | `camera.default_exposure` | 400 | Microseconds |
 | `camera.micronsPerPixel` | 19.3 | Measured image scale |
 | `camera.flipImageUD` | false | Flip frames vertically |
@@ -34,8 +38,6 @@ The settings file is `zapitSystemSettings.yml`. It is looked for in this order: 
 | `experiment.blankOnsetShift_ms` | -0.12 | Positive starts the blank earlier |
 | `experiment.blankOffsetShift_ms` | 0.25 | Positive ends the blank later |
 | `server.enable` | true | Start the ZeroMQ server with the GUI |
-| `server.bind` | tcp://*:5555 | Bind address |
+| `server.bind` | tcp://127.0.0.1:5555 | Bind address. Local connections only by default; use `tcp://*:5555` to accept other machines |
 | `cache.ROI` | null | Last camera ROI, reapplied at start |
-| `cache.previouslyLoadedFiles` | null | Recent stimulus configs for the File menu |
-
-Files from the MATLAB version load unchanged. Their `NI.wrapper`, `general.openPythonBridgeOnStartup` and `tcpServer` entries are dropped and `experiment.defaultLaserFrequencyHz` is renamed.
+| `cache.previouslyLoadedFiles` | null | Recent stimulus configs for the File menu, as a list of `{path, time}` |

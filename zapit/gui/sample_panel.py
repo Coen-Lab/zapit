@@ -3,8 +3,10 @@
 Sample calibration is an interactive flow driven by clicks on the camera view:
 the first click places bregma and the atlas outline, the cursor then rotates and
 scales the outline so the stereotaxic reference point (0, refAP) sits under it,
-and the second click fixes the calibration. ``confirm`` can be replaced to skip
-the Yes/No dialog (tests do this).
+and the second click shows the resulting outline as a preview. The model is
+calibrated only when the user accepts the preview; Esc, the Cancel button or
+answering No keeps the previous calibration untouched. ``confirm`` can be
+replaced to skip the Yes/No dialog (tests do this).
 """
 from __future__ import annotations
 
@@ -46,17 +48,26 @@ class SamplePanel(QWidget):
         calib = QGroupBox("Sample calibration")
         grid = QGridLayout(calib)
         self.calibrate_btn = QPushButton("Calibrate sample")
+        self.calibrate_btn.setToolTip("Click bregma, then the midline point at the reference AP; the existing "
+                                      "calibration is kept until you accept the new one."
+                                      " Disabled while a trial is armed or playing.")
         self.calibrate_btn.clicked.connect(self.start_calibration)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setToolTip("Stop the sample calibration clicks and keep the previous calibration (Esc).")
+        self.cancel_btn.clicked.connect(self.cancel_calibration)
         self.ref_ap = QComboBox()
+        self.ref_ap.setToolTip("AP of the second calibration point on the midline; changing it clears the "
+                               "sample calibration.")
         for v in REF_AP_VALUES:
             self.ref_ap.addItem(f"{v:+d} mm", v)
         self.ref_ap.currentIndexChanged.connect(self._ref_ap_changed)
         self.instructions = QLabel("")
         self.instructions.setWordWrap(True)
         grid.addWidget(self.calibrate_btn, 0, 0)
-        grid.addWidget(QLabel("Reference AP"), 0, 1)
-        grid.addWidget(self.ref_ap, 0, 2)
-        grid.addWidget(self.instructions, 1, 0, 1, 3)
+        grid.addWidget(self.cancel_btn, 0, 1)
+        grid.addWidget(QLabel("Reference AP"), 1, 0)
+        grid.addWidget(self.ref_ap, 1, 1)
+        grid.addWidget(self.instructions, 2, 0, 1, 2)
         root.addWidget(calib)
 
         demo = QGroupBox("Check on the sample")
@@ -68,8 +79,21 @@ class SamplePanel(QWidget):
         self.paint_area_btn = QPushButton("Paint area")
         for b in (self.paint_border_btn, self.overlay_btn, self.zap_all_btn, self.zap_site_btn, self.paint_area_btn):
             b.setCheckable(True)
+        trial = " Disabled while a trial is armed or playing."
+        self.paint_border_btn.setToolTip("Trace the calibrated brain outline with the beam. "
+                                         "Needs a sample calibration." + trial)
+        self.overlay_btn.setToolTip("Draw the config's stimulus points on the image. "
+                                    "Needs a sample calibration and a loaded config.")
+        self.zap_all_btn.setToolTip("Hop the beam between every stimulus point. "
+                                    "Needs a sample calibration and a loaded config." + trial)
+        self.zap_site_btn.setToolTip("Hop the beam between the points of the chosen condition. "
+                                     "Needs a sample calibration and a loaded config." + trial)
+        self.paint_area_btn.setToolTip("Trace the chosen atlas area with the beam. "
+                                       "Needs a sample calibration." + trial)
         self.condition = QComboBox()
+        self.condition.setToolTip("Condition used by Zap site. Needs a loaded config.")
         self.area = QComboBox()
+        self.area.setToolTip("Atlas area used by Paint area. Needs a sample calibration.")
         for a in self.model.atlas.areas:
             self.area.addItem(a.name, a.index)
         dgrid.addWidget(self.paint_border_btn, 0, 0)
@@ -94,9 +118,13 @@ class SamplePanel(QWidget):
         exp = QGroupBox("Experiment")
         egrid = QGridLayout(exp)
         self.export_btn = QPushButton("Export waveforms")
-        self.export_btn.clicked.connect(self.export_waveforms)
+        self.export_btn.setToolTip("Save one modulation cycle per condition (.npz) and the condition table "
+                                   "(.csv). Needs a sample calibration and a loaded config.")
+        self.export_btn.clicked.connect(lambda: self.export_waveforms())
         self.set_path_btn = QPushButton("Set experiment path")
+        self.set_path_btn.setToolTip("Folder where trial logs are written.")
         self.clear_path_btn = QPushButton("Clear path")
+        self.clear_path_btn.setToolTip("Stop writing trial logs.")
         self.set_path_btn.clicked.connect(self.choose_experiment_path)
         self.clear_path_btn.clicked.connect(lambda: self.model.set_experiment_path(None))
         self.path_field = QLineEdit()
@@ -123,11 +151,16 @@ class SamplePanel(QWidget):
     def update_enabled(self):
         sample = self.model.sample_calibrated
         cfg = self.model.stim_config is not None
-        self.paint_border_btn.setEnabled(sample)
-        self.paint_area_btn.setEnabled(sample)
+        free = not self.window.trial_locked
+        self.calibrate_btn.setEnabled(free)
+        self.cancel_btn.setEnabled(bool(self.stage))
+        self.paint_border_btn.setEnabled(sample and free)
+        self.paint_area_btn.setEnabled(sample and free)
         self.area.setEnabled(sample)
-        for w in (self.overlay_btn, self.zap_all_btn, self.zap_site_btn, self.condition, self.export_btn):
+        for w in (self.overlay_btn, self.condition, self.export_btn):
             w.setEnabled(sample and cfg)
+        for w in (self.zap_all_btn, self.zap_site_btn):
+            w.setEnabled(sample and cfg and free)
 
     def on_sample_calibrated(self, on: bool):
         if on:
@@ -167,26 +200,33 @@ class SamplePanel(QWidget):
 
     # ------------------------------------------------------------------ sample calibration flow
     def start_calibration(self):
-        """Begin the two-click flow. Clicks and moves arrive via ``on_view_clicked``/``on_view_moved``."""
-        self.window.release_toggles()
-        if self.overlay_btn.isChecked():
-            self.overlay_btn.setChecked(False)
-        self.model.wipe_sample_calib()
-        self.view.clear_layer("outline_calibrated")
-        self.view.clear_layer("outline_temp")
-        self.view.clear_layer("bregma")
+        """Begin the two-click flow. Clicks and moves arrive via ``on_view_clicked``/``on_view_moved``.
+
+        The model's current calibration is left alone until a new one is accepted.
+        """
+        self.window.release_toggles(except_name="calibrate_sample")
+        self._clear_preview()
         self._bregma = None
         self.stage = 1
-        self.instructions.setText("Click on bregma")
-        self.window.set_status("Sample calibration: click on bregma")
+        self.instructions.setText("Click on bregma (Esc cancels)")
+        self.window.set_status("Sample calibration: click on bregma (Esc cancels)")
+        self.update_enabled()
 
-    def cancel_calibration(self):
-        if self.stage:
-            self.stage = 0
-            self._bregma = None
-            self.view.clear_layer("outline_temp")
-            self.view.clear_layer("bregma")
-            self.instructions.setText("")
+    def cancel_calibration(self) -> bool:
+        """Abort the clicking, keeping the previous calibration. True when a calibration was in progress."""
+        if not self.stage:
+            return False
+        self.stage = 0
+        self._bregma = None
+        self._clear_preview()
+        self.instructions.setText("")
+        self.window.set_status("Sample calibration cancelled; the previous calibration is kept")
+        self.update_enabled()
+        return True
+
+    def _clear_preview(self):
+        for layer in ("outline_temp", "bregma", "ref_point"):
+            self.view.clear_layer(layer)
 
     def on_view_moved(self, x: float, y: float):
         if self.stage == 1:
@@ -206,21 +246,30 @@ class SamplePanel(QWidget):
             self.instructions.setText(f"Move to the midline point at AP {ap:+g} mm and click")
             self.window.set_status(self.instructions.text())
         elif self.stage == 2:
-            if self._outline_for_reference(x, y) is None:
+            outline = self._outline_for_reference(x, y)
+            if outline is None:
                 return
+            # Preview only: the model keeps its previous calibration until the user accepts this one.
+            ref = np.array([self._bregma, [x, y]], dtype=float)
+            self.view.set_curve("outline_temp", outline, closed=True)
+            self.view.set_points("ref_point", [[x, y]])
             self.stage = 0
             self.instructions.setText("")
-            ref = np.array([self._bregma, [x, y]], dtype=float)
-            self.model.calibrate_sample(ref)
-            self.view.clear_layer("outline_temp")
-            self.view.clear_layer("bregma")
-            if self.confirm():
+            self.update_enabled()
+            accepted = self.confirm()
+            self._clear_preview()
+            self._bregma = None
+            if accepted:
+                self.model.calibrate_sample(ref)
                 self.window.set_status("Sample calibrated")
                 if self.model.stim_config is not None:
-                    self.overlay_btn.setChecked(True)
+                    if self.overlay_btn.isChecked():
+                        self._draw_stim_sites()
+                    else:
+                        self.overlay_btn.setChecked(True)
             else:
-                self.model.wipe_sample_calib()
-                self.window.set_status("Sample calibration discarded")
+                kept = "the previous calibration is kept" if self.model.sample_calibrated else "not calibrated"
+                self.window.set_status(f"Sample calibration discarded; {kept}")
 
     def _outline_for_reference(self, x: float, y: float) -> np.ndarray | None:
         if self._bregma is None or np.hypot(*(self._bregma - [x, y])) < MIN_REF_DISTANCE_MM:
@@ -262,16 +311,29 @@ class SamplePanel(QWidget):
             self.view.clear_layer("stim_sites")
             self.view.clear_layer("stim_labels")
 
+    def _start_pattern(self, title: str, button: QPushButton, action: Callable[[], None]) -> bool:
+        """Run ``action``; on refusal report it, uncheck ``button`` quietly and return False."""
+        try:
+            action()
+        except NotReadyError as e:
+            self.window.not_ready(title, e)
+        except (ValueError, IndexError) as e:
+            self.window.notify(title, str(e), "warning", modal=False)
+        else:
+            self.window.pattern_started()
+            return True
+        button.blockSignals(True)
+        button.setChecked(False)
+        button.blockSignals(False)
+        self.window.stop_pattern()
+        return False
+
     def _pattern_toggle(self, name: str, button: QPushButton, on: bool, action: Callable[[], None]):
         if on:
             self.window.release_toggles(except_name=name)
-            try:
-                action()
-            except (NotReadyError, ValueError, IndexError) as e:
-                self.window.notify(button.text(), str(e), "warning")
-                button.setChecked(False)
+            self._start_pattern(button.text(), button, action)
         else:
-            self.model.stop_pattern()
+            self.window.stop_pattern()
 
     def _paint_border_toggled(self, on: bool):
         self._pattern_toggle("paint_border", self.paint_border_btn, on, self.model.draw_brain_outline)
@@ -290,8 +352,8 @@ class SamplePanel(QWidget):
 
     def _condition_changed(self, _idx: int):
         if self.zap_site_btn.isChecked():
-            self.model.stop_pattern()
-            self._zap_selected_site()
+            self.window.stop_pattern()
+            self._start_pattern(self.zap_site_btn.text(), self.zap_site_btn, self._zap_selected_site)
 
     def _paint_area_toggled(self, on: bool):
         self._pattern_toggle("paint_area", self.paint_area_btn, on, self._paint_selected_area)
@@ -304,8 +366,8 @@ class SamplePanel(QWidget):
 
     def _area_changed(self, _idx: int):
         if self.paint_area_btn.isChecked():
-            self.model.stop_pattern()
-            self._paint_selected_area()
+            self.window.stop_pattern()
+            self._start_pattern(self.paint_area_btn.text(), self.paint_area_btn, self._paint_selected_area)
 
     # ------------------------------------------------------------------ export and paths
     def export_waveforms(self, path: str | Path | None = None):

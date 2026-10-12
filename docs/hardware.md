@@ -1,6 +1,6 @@
 # Hardware
 
-The optical design, parts list and alignment procedure are in the upstream manual at https://zapit.swcmicroscopy.com. This page covers what the software expects.
+The optical design, parts list and alignment procedure are in the Zapit manual at https://zapit.swcmicroscopy.com. This page covers what the software expects.
 
 ## DAQ
 
@@ -12,8 +12,8 @@ An NI X-series or similar multifunction DAQ with four analog outputs, one analog
 | AO1 | Galvo Y command | `invertYscanner` flips it |
 | AO2 | Laser analog modulation | 0 to `laser.laserMinMaxControlVolts[1]` V; mW mapping from the settings or a measured fit |
 | AO3 | Masking LED | 5 V TTL while the laser is gated on, so the animal cannot use the laser flash as a cue |
-| PFI0 | Start trigger input | Rising edge starts an armed trial. Configurable as `NI.triggerChannel` |
-| AI0 | Photodiode | Only for the laser power calibration sweep |
+| PFI0 | Start trigger input | Rising edge starts an armed trial. Configurable as `NI.triggerChannel`, written either as `PFI0` or with the device, `/Dev1/PFI0` |
+| AI0 | Photodiode | Only for the laser power calibration sweep. Read differentially (AI0 against AI8) over +/-10 V |
 | port0/line0 | LED gate as a clocked digital line | Optional, `Zapit.use_clocked_do = True`; frees AO3 for a second laser |
 
 All outputs are in the +/-10 V range; the code refuses waveforms outside it.
@@ -26,7 +26,7 @@ Any TTL works. The Bonsai example uses a Harp Behavior board digital output wire
 
 ## Camera
 
-Basler cameras through pypylon. Set `camera.backend: basler` (the default) and `camera.connectionIndex` when more than one is attached (the GUI console lists them at start). `micronsPerPixel` must be measured for your lens (image a ruler). The default exposure is in microseconds. ROI is applied on the camera, not in software, so the frame rate stays high when cropped.
+Basler cameras through pypylon. Set `camera.backend: basler` (the default) and `camera.connectionIndex` when more than one is attached (the GUI console lists them at start). `connectionIndex` is 0-based: 0 is the first camera in that list, and an index past the end is an error. Older cameras that name their features `ExposureTimeAbs`, `GainRaw` and `AcquisitionFrameRateAbs` are supported; on those the gain is set to the lowest raw value, since raw gain units differ between models. `micronsPerPixel` must be measured for your lens (image a ruler). The default exposure is in microseconds. ROI is applied on the camera, not in software, so the frame rate stays high when cropped.
 
 Adding another camera: subclass `zapit.hardware.camera.Camera`, implement the abstract members, and add a branch in `zapit.hardware.make_camera`.
 

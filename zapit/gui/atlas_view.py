@@ -17,7 +17,7 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QPointF, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPolygonF
-from PyQt6.QtWidgets import QGraphicsPolygonItem
+from PyQt6.QtWidgets import QGraphicsPolygonItem, QVBoxLayout, QWidget
 
 from zapit.atlas import Area, Atlas
 
@@ -198,3 +198,24 @@ class AtlasView(pg.PlotWidget):
         mm = self._scene_to_mm(ev.scenePos())
         if mm is not None:
             self.mouse_clicked.emit(mm[0], mm[1], ev.modifiers())
+
+
+class StimCoordsWindow(QWidget):
+    """Non-modal plot of a config's points in stereotaxic mm on the brain outline, one colour per condition."""
+
+    def __init__(self, atlas: Atlas, point_sets: list[np.ndarray], title: str = "Stim coords", parent=None):
+        super().__init__(parent, Qt.WindowType.Window)
+        self.setWindowTitle(title)
+        self.resize(520, 600)
+        layout = QVBoxLayout(self)
+        self.view = AtlasView(atlas)
+        layout.addWidget(self.view)
+        self.view.set_conditions([np.atleast_2d(np.asarray(p, dtype=float)) for p in point_sets])
+        self.labels: list[pg.TextItem] = []
+        for i, pts in enumerate(point_sets):
+            colour, _ = condition_style(i)
+            p = np.atleast_2d(np.asarray(pts, dtype=float))[0]
+            label = pg.TextItem(str(i + 1), color=colour, anchor=(0, 1))
+            label.setPos(float(p[0]), float(p[1]))
+            self.view.addItem(label)
+            self.labels.append(label)

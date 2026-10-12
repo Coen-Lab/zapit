@@ -18,12 +18,12 @@
       </Expression>
       <Expression xsi:type="GroupWorkflow">
         <Name>ZapitClient</Name>
-        <Description>Sends JSON commands to the Zapit ZeroMQ server, logs every reply, and publishes the reply to each successful send_samples so the trigger pulse can follow it.</Description>
+        <Description>Sends JSON commands to the Zapit ZeroMQ server, logs every reply, and publishes the reply to each successful send_samples so TriggerPulse knows the DAQ is armed.</Description>
         <Workflow>
           <Nodes>
             <Expression xsi:type="Annotation">
-              <Name>Where the task plugs in</Name>
-              <Text><![CDATA[The two KeyDown nodes are stand-ins for the demo. In a real task, delete the Space KeyDown and connect your trial-start event (for example a SubscribeSubject carrying the visual stimulus onset) to the WithLatestFrom node in its place. Anything that emits once per trial works; the value is ignored. The S KeyDown can likewise be replaced by whatever ends a continuous stimulus.]]></Text>
+              <Name>Where the task plugs in: arming</Name>
+              <Text><![CDATA[The two KeyDown nodes are stand-ins for the demo. Space arms the next trial: in a real task, delete it and connect an event from the inter-trial interval (for example a SubscribeSubject carrying the end of the previous trial) to the WithLatestFrom node in its place. Arming takes tens of milliseconds, so it must not happen at stimulus onset; the onset event goes to TriggerPulse, which only fires the TTL. Anything that emits once per trial works here; the value is ignored. The S KeyDown can likewise be replaced by whatever ends a continuous stimulus.]]></Text>
             </Expression>
             <Expression xsi:type="Combinator">
               <Combinator xsi:type="wie:KeyDown">
@@ -60,7 +60,7 @@
               <Combinator xsi:type="rx:Merge" />
             </Expression>
             <Expression xsi:type="ExternalizedMapping">
-              <Property Name="ConnectionString" DisplayName="ZapitAddress" Description="ZeroMQ endpoint of the Zapit server. The server binds tcp://*:5555 by default, so this is tcp://localhost:5555 on the same machine or tcp://&lt;host&gt;:5555 across the network." Category="Zapit" />
+              <Property Name="ConnectionString" DisplayName="ZapitAddress" Description="ZeroMQ endpoint of the Zapit server. The server binds tcp://127.0.0.1:5555 by default, so this is tcp://localhost:5555 on the same machine; to drive Zapit from another machine set server.bind to tcp://*:5555 and use tcp://&lt;host&gt;:5555 here." Category="Zapit" />
             </Expression>
             <Expression xsi:type="Combinator">
               <Combinator xsi:type="zmq:Request">
@@ -89,7 +89,7 @@
             </Expression>
             <Expression xsi:type="rx:Condition">
               <Name>ArmedOk</Name>
-              <Description>Passes only the reply to a successful send_samples. Those replies carry a condition field and never an error field; stop and error replies are dropped here so they cannot fire the trigger.</Description>
+              <Description>Passes only the reply to a successful send_samples. Those replies carry a condition field and never an error field; stop and error replies are dropped here so they never enable the trigger.</Description>
               <Workflow>
                 <Nodes>
                   <Expression xsi:type="WorkflowInput">
@@ -135,11 +135,24 @@
       </Expression>
       <Expression xsi:type="GroupWorkflow">
         <Name>TriggerPulse</Name>
-        <Description>On each ZapitArmed reply, raises DO0 on the Harp Behavior board for 5 ms. DO0 is wired to the NI DAQ PFI0 and its rising edge starts the stimulus.</Description>
+        <Description>At each stimulus onset, once a ZapitArmed reply has been seen, raises DO0 on the Harp Behavior board for 5 ms. DO0 is wired to the NI DAQ PFI0 and its rising edge starts the stimulus.</Description>
         <Workflow>
           <Nodes>
+            <Expression xsi:type="Annotation">
+              <Name>Where the task plugs in: onset</Name>
+              <Text><![CDATA[The T KeyDown stands in for the stimulus onset. In a real task, delete it and connect your onset event (for example a SubscribeSubject carrying the visual stimulus onset) to the WithLatestFrom node as Source1. Only the TTL happens here, so the pulse follows the onset by one Harp write. WithLatestFrom fires on the onset, never on the arm reply, so a late reply cannot start a stimulus early; a pulse after a failed arm reaches an idle DAQ and does nothing.]]></Text>
+            </Expression>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="wie:KeyDown">
+                <wie:Filter>T</wie:Filter>
+                <wie:SuppressRepetitions>true</wie:SuppressRepetitions>
+              </Combinator>
+            </Expression>
             <Expression xsi:type="SubscribeSubject">
               <Name>ZapitArmed</Name>
+            </Expression>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="rx:WithLatestFrom" />
             </Expression>
             <Expression xsi:type="beh:CreateMessage">
               <harp:MessageType>Write</harp:MessageType>
@@ -177,13 +190,15 @@
             </Expression>
           </Nodes>
           <Edges>
-            <Edge From="0" To="1" Label="Source1" />
-            <Edge From="1" To="2" Label="Source1" />
-            <Edge From="1" To="4" Label="Source1" />
-            <Edge From="2" To="3" Label="Source1" />
-            <Edge From="3" To="4" Label="Source2" />
-            <Edge From="4" To="6" Label="Source1" />
+            <Edge From="1" To="3" Label="Source1" />
+            <Edge From="2" To="3" Label="Source2" />
+            <Edge From="3" To="4" Label="Source1" />
+            <Edge From="4" To="5" Label="Source1" />
+            <Edge From="4" To="7" Label="Source1" />
             <Edge From="5" To="6" Label="Source1" />
+            <Edge From="6" To="7" Label="Source2" />
+            <Edge From="7" To="9" Label="Source1" />
+            <Edge From="8" To="9" Label="Source1" />
           </Edges>
         </Workflow>
       </Expression>

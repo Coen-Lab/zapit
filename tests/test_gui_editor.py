@@ -193,3 +193,38 @@ def test_mouse_move_updates_label_and_highlight(editor):
     assert editor.view._highlight_items == []
     editor._on_mouse_left()
     assert editor.view._highlight_key == (None, 0)
+
+
+def test_save_warns_on_points_outside_brain(editor, tmp_path, monkeypatch):
+    questions = []
+    answer = {"value": False}
+
+    def confirm(self, title, text):
+        questions.append(text)
+        return answer["value"]
+    monkeypatch.setattr(StimConfigEditor, "_confirm", confirm)
+    editor.bilateral = False
+    editor.add_condition_at(2.5, -3.5)               # visual cortex
+    editor.add_condition_at(5.5, 4.0)                # outside the brain
+    assert editor.outside_brain_conditions() == [2]
+    editor._path = tmp_path / "outside.yml"
+    editor.save()
+    assert len(questions) == 1 and "Condition 2 " in questions[0]
+    assert not (tmp_path / "outside.yml").exists()   # default No: nothing written
+    answer["value"] = True
+    editor.save()
+    assert (tmp_path / "outside.yml").exists()
+    editor.delete_nearest(5.5, 4.0)
+    questions.clear()
+    editor.save()
+    assert questions == []                           # all inside: no question
+
+
+def test_editor_load_failure_is_reported(editor, tmp_path, monkeypatch):
+    warnings = []
+    monkeypatch.setattr(StimConfigEditor, "_warn", lambda self, title, text: warnings.append(text))
+    garbage = tmp_path / "garbage.yml"
+    garbage.write_bytes(bytes(range(256)) * 4)
+    assert editor.try_load(garbage) is None
+    assert len(warnings) == 1 and "garbage.yml" in warnings[0]
+    assert editor.conditions == [] and editor.path is None

@@ -1,6 +1,6 @@
 """Stimulus configuration files: the conditions an experiment can present.
 
-YAML schema (unchanged from upstream Zapit so existing files load)::
+YAML schema::
 
     stimLocations01:
       ML: [3.56, -3.56]          # one value per point (scalar for a single point)
@@ -70,7 +70,7 @@ class Condition:
             attrs = d.get("Attributes") or {}
             power = float(attrs["laserPowerInMW"])
             ramp = float(attrs["offRampDownDuration_ms"])
-        except (KeyError, TypeError, ValueError) as e:
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
             raise StimConfigError(f"Condition {index} is malformed: {e}") from e
         if ml.shape != ap.shape:
             raise StimConfigError(f"Condition {index}: ML and AP have different lengths")
@@ -98,28 +98,39 @@ class StimConfig:
     # ------------------------------------------------------------------ construction
     @classmethod
     def load(cls, path: str | Path) -> "StimConfig":
+        """Read and validate a config. Every problem with the file is raised as StimConfigError."""
         path = Path(path)
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            raise StimConfigError(f"{path.name}: cannot read the file ({e})") from e
         problem = malformed_key_report(text)
         if problem:
             raise StimConfigError(f"{path.name}: {problem}")
-        data = yaml.safe_load(text) or {}
+        try:
+            data = yaml.safe_load(text) or {}
+        except yaml.YAMLError as e:
+            raise StimConfigError(f"{path.name}: not valid YAML ({e})") from e
+        if not isinstance(data, dict):
+            raise StimConfigError(f"{path.name}: expected stimLocationsNN entries, found a {type(data).__name__}")
         conditions = []
         i = 1
         while f"stimLocations{i:02d}" in data:
+            if not isinstance(data[f"stimLocations{i:02d}"], dict):
+                raise StimConfigError(f"{path.name}: stimLocations{i:02d} is not a mapping")
             conditions.append(Condition.from_yaml(data[f"stimLocations{i:02d}"], i))
             i += 1
         if not conditions:
             raise StimConfigError(f"{path.name}: no stimLocationsNN entries found")
-        if "stimModulationFreqHz" in data:
+        if "stimModulationFreqHz" not in data:
+            raise StimConfigError(f"{path.name}: no top-level stimModulationFreqHz. A file that stores it per "
+                                  f"condition is in the old layout: convert it with scripts/migrate_rig.py --configs")
+        try:
             hz = float(data["stimModulationFreqHz"])
-        else:
-            first_attrs = (data["stimLocations01"].get("Attributes") or {})
-            if "stimModulationFreqHz" not in first_attrs:
-                raise StimConfigError(f"{path.name}: no stimModulationFreqHz found")
-            hz = float(first_attrs["stimModulationFreqHz"])
-            print(f"Note: {path.name} stores stimModulationFreqHz per condition (deprecated); "
-                  f"using {hz} Hz from the first condition. Re-save to migrate.")
+        except (TypeError, ValueError) as e:
+            raise StimConfigError(f"{path.name}: stimModulationFreqHz is not a number") from e
+        if not hz > 0:
+            raise StimConfigError(f"{path.name}: stimModulationFreqHz must be positive")
         return cls(conditions, hz, path)
 
     def save(self, path: str | Path) -> Path:
@@ -148,12 +159,12 @@ class StimConfig:
         return np.vstack([c.points for c in self.conditions])
 
     def stim_duration_ms(self, index: int, blanking_time_ms: float) -> float:
-        """Laser-on time per point per cycle, as upstream computes it."""
+        """Laser-on time per point per cycle."""
         period_ms = 1e3 / self.modulation_hz
         n = self.conditions[index].n_points
         if n <= 1:
             return period_ms * self.duty_cycle
-        # Measured pulse widths run short by about half the blanking time; upstream fudge kept.
+        # Measured pulse widths run short by about half the blanking time.
         return (period_ms - blanking_time_ms * n) / n - blanking_time_ms / 2
 
     def peak_power_mw(self, index: int, blanking_time_ms: float, requested_mw: float | None = None) -> float:
@@ -170,10 +181,14 @@ class StimConfig:
     def log_parameters(self, directory: str | Path, extra: dict | None = None) -> Path:
         """Write the parameter log that must accompany every experiment."""
         directory = Path(directory)
-        stamp = _dt.datetime.now().strftime("%Y_%m_%d__%H-%M")
+        stamp = _dt.datetime.now().strftime("%Y_%m_%d__%H-%M-%S")
         path = directory / f"zapit_log_{stamp}.yml"
+        n = 2
+        while path.exists():   # two logs in one second (a config change straight after the first trial)
+            path = directory / f"zapit_log_{stamp}_{n}.yml"
+            n += 1
         data = {"zapitVersion": _version(), "stimModulationFreqHz": float(self.modulation_hz),
-                "configFile": str(self.path) if self.path else None}
+                "configFile": str(Path(self.path).resolve()) if self.path else None}
         data.update(extra or {})
         for i, c in enumerate(self.conditions):
             data[f"stimLocations{i + 1:02d}"] = c.to_yaml()

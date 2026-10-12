@@ -7,11 +7,13 @@ Zapit runs a ZeroMQ REP socket so an external program can drive trials. Bonsai i
 | Item       | Value                                                                                  |
 |------------|----------------------------------------------------------------------------------------|
 | Pattern    | ZeroMQ REQ (client) to REP (Zapit), strictly one request then one reply               |
-| Bind       | `tcp://*:5555` by default, set by `server.bind` in the settings YAML                   |
+| Bind       | `tcp://127.0.0.1:5555` by default, set by `server.bind` in the settings YAML           |
 | Framing    | One single-frame message per request and per reply                                     |
 | Encoding   | UTF-8 JSON object both ways                                                            |
 | Request    | `{"cmd": "<name>", ...arguments}`                                                      |
 | Reply      | `{"ok": true, ...fields}` on success, `{"ok": false, "error": "<Type>: <message>"}` on failure |
+
+The server starts only when `server.enable` is true (the default). The default bind accepts connections from the same machine only; to drive Zapit from another machine, set `server.bind` to `tcp://*:5555` explicitly.
 
 Every request gets exactly one reply, including malformed ones. A REQ socket that sends and never receives is stuck, so set a receive timeout (the Python client uses 5 s) and rebuild the socket on timeout, which is the only way to recover a REQ socket in ZeroMQ.
 
@@ -51,9 +53,11 @@ The reply reports what was actually chosen, which matters when `condition` or `l
 
 | State      | Meaning                                                             |
 |------------|---------------------------------------------------------------------|
-| `idle`     | Nothing playing                                                     |
+| `idle`     | Nothing armed or playing, including once a finite trial has finished playing |
 | `stim`     | A trial is loaded, either armed for a trigger or playing             |
 | `rampdown` | `stop` was called on a continuous stimulus and the laser is ramping down (about 200 ms after the ramp it returns to `idle`) |
+
+While a trial is armed or playing (`stim` or `rampdown`), unclocked beam and laser writes are refused, so pointing the beam from the GUI cannot disturb a trial.
 
 ## A trial, step by step
 
@@ -164,7 +168,7 @@ With an explicit ramp:
 {"cmd": "stop", "rampdown_ms": 100}
 ```
 
-`stop` on an idle system or on a finished finite trial replies `{"state": "idle", "ok": true}`. `rampdown_ms` omitted or null uses the ramp from the last condition's config.
+`stop` on an idle system or on a finished finite trial replies `{"state": "idle", "ok": true}`. `stop` on a finite trial that is armed but has not been triggered cancels it: the DAQ is disarmed, nothing plays, and the reply is `{"state": "idle", "ok": true}`. `rampdown_ms` omitted or null uses the ramp from the last condition's config.
 
 ### load_config
 
@@ -234,4 +238,4 @@ r = z.send_samples(condition=None, laser_on=None, stim_duration_s=1.5, hardware_
 print(r["condition"], r["laser_on"])   # now raise the TTL on PFI0
 ```
 
-A MATLAB client with the `zmq` toolbox or a Bonsai workflow with `Bonsai.ZeroMQ` does the same three calls. Nothing in the protocol is specific to Python.
+A client in any other language with a ZeroMQ binding, or a Bonsai workflow with `Bonsai.ZeroMQ`, does the same three calls. Nothing in the protocol is specific to Python.

@@ -1,12 +1,10 @@
 """System settings: defaults, validation, YAML persistence and file discovery.
 
-The YAML keys match the upstream MATLAB Zapit settings file so an existing
-``zapitSystemSettings.yml`` loads unchanged. Keys the Python version no longer
-uses (``NI.wrapper``, ``general.openPythonBridgeOnStartup``, ``tcpServer``) are
-dropped on load and the file is rewritten; a timestamped backup is kept.
+Unknown keys are dropped on load, missing ones filled from defaults and invalid
+values replaced; the file is then rewritten with a timestamped backup.
 
 Settings are a plain nested dict. Access is ``settings["camera"]["micronsPerPixel"]``
-so the names line up with the YAML and with the upstream documentation.
+so the names line up with the YAML.
 """
 from __future__ import annotations
 
@@ -48,8 +46,9 @@ def _is_roi(x: Any) -> bool:
     return x is None or (isinstance(x, (list, tuple)) and len(x) == 4 and all(_is_number(v) for v in x))
 
 
-def _is_list(x: Any) -> bool:
-    return x is None or isinstance(x, list)
+def _is_recent_list(x: Any) -> bool:
+    return x is None or (isinstance(x, list)
+                         and all(isinstance(r, dict) and _is_str(r.get("path")) for r in x))
 
 
 # Each leaf: (default value, validator). Validators replace a bad value with the default.
@@ -104,39 +103,38 @@ _SCHEMA: dict[str, dict[str, tuple[Any, Any]]] = {
     },
     "server": {
         "enable": (True, _is_bool),
-        "bind": ("tcp://*:5555", _is_str),
+        "bind": ("tcp://127.0.0.1:5555", _is_str),
     },
     "cache": {
         "ROI": (None, _is_roi),
-        "previouslyLoadedFiles": (None, _is_list),
+        "previouslyLoadedFiles": (None, _is_recent_list),
     },
 }
 
-# Old key -> new key, applied before unknown keys are dropped.
-_RENAMES = {
-    ("experiment", "defaultLaserFrequencyHz"): ("experiment", "defaultLaserModulationFrequencyHz"),
-}
+# Sections a user never edits by hand; ignored when deciding whether a file is still the default.
+_RUNTIME_SECTIONS = ("cache",)
 
 
 def default_settings() -> dict[str, dict[str, Any]]:
     return {sec: {k: copy.deepcopy(v[0]) for k, v in leaves.items()} for sec, leaves in _SCHEMA.items()}
 
 
+def is_unedited_default(settings: dict[str, Any]) -> bool:
+    """True when every rig-specific value still equals the shipped default."""
+    d = default_settings()
+    return all(settings.get(sec) == d[sec] for sec in d if sec not in _RUNTIME_SECTIONS)
+
+
 def validate(settings: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Return (clean settings, was_already_valid).
 
     Unknown sections and keys are dropped, missing ones filled from defaults,
-    values failing their validator replaced by the default. Booleans stored as
-    0/1 floats by the MATLAB YAML writer are coerced to bool.
+    values failing their validator replaced by the default. Booleans written as
+    0/1 numbers are coerced to bool.
     """
     out = default_settings()
     valid = True
     src = copy.deepcopy(settings) if isinstance(settings, dict) else {}
-
-    for (old_sec, old_key), (new_sec, new_key) in _RENAMES.items():
-        if isinstance(src.get(old_sec), dict) and old_key in src[old_sec]:
-            src.setdefault(new_sec, {})[new_key] = src[old_sec].pop(old_key)
-            valid = False
 
     for sec, leaves in _SCHEMA.items():
         user = src.get(sec)
@@ -173,8 +171,6 @@ def possible_settings_dirs() -> list[Path]:
         p = Path(env)
         dirs.append(p.parent if p.suffix in (".yml", ".yaml") else p)
     dirs.append(Path.home() / "ZapitSettings")
-    if os.name == "nt":
-        dirs.append(Path("C:/ZapitSettings"))
     return dirs
 
 
@@ -188,7 +184,8 @@ def find_settings_file(create: bool = True) -> Path:
     if create:
         f.parent.mkdir(parents=True, exist_ok=True)
         save_settings(default_settings(), f)
-        print(f"No Zapit settings file found: wrote defaults to {f}")
+        print(f"No Zapit settings file found: wrote defaults to {f}. Edit it for this rig before "
+              f"stimulating (docs/settings.md); stimulation is refused until it differs from the defaults")
     return f
 
 

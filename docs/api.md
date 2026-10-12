@@ -7,6 +7,8 @@ from zapit import Zapit
 z = Zapit(simulated=False)          # reads the settings file, connects camera and DAQ, starts the camera
 ```
 
+`calibrate_scanners()` returns False when fewer than four spots are found, when it is cancelled with `z.abort_calibration = True`, or when the fit's mean residual is above 100 um (usually a mirrored view that needs `scanners.invertXscanner` or `invertYscanner`).
+
 `Zapit(simulated=True)` substitutes a simulated camera and DAQ. `settings_path=` loads a specific settings file and never rewrites it.
 
 ## Calibration
@@ -49,12 +51,16 @@ r = z.send_samples(condition=3, laser_on=None,         # condition 3, random las
                    stim_duration_s=1.5, start_delay_s=0.2,
                    laser_power_mw=1.0, hardware_triggered=False)
 r.condition, r.laser_on, r.laser_power_mw, r.waveforms
-z.state                       # 'idle', 'stim', 'rampdown'
-z.stop_opto_stim()            # ramp down a continuous stimulus (config ramp-down, or pass ms)
+z.state                       # 'idle', 'stim', 'rampdown'; 'idle' again once a finite trial has played
+z.trial_active                # True while a trial is armed, playing or ramping down
+z.stop_opto_stim()            # ramp down a continuous stimulus (config ramp-down, or pass ms);
+                              # disarms a finite trial that was never triggered
 z.set_experiment_path("D:/data/mouse1/session3")      # enables logging
 ```
 
-`send_samples` raises `NotReadyError` when a calibration or config is missing or a finite trial is still playing, and `ValueError` for a bad condition number.
+`send_samples` raises `NotReadyError` when a calibration or config is missing, a finite trial is armed or playing, a check pattern is running, or (on hardware) the settings file still holds the shipped defaults; `ValueError` for a bad condition number. While `trial_active`, beam moves, laser writes, check patterns and scanner calibration raise `NotReadyError`. After a ramp-down the laser and scanners are set to 0 V.
+
+Logging writes one `zapit_log_<time>.yml` (the config, its absolute path, version, hostname) and one `zapit_trials_<time>.csv` per experiment folder and config; loading another config starts a new pair. A trial is logged only once the DAQ has accepted it, with a millisecond timestamp of when it was armed.
 
 ## Callbacks
 
@@ -68,7 +74,7 @@ Signals: `on_state`, `on_stim_config`, `on_scanners_calibrated`, `on_sample_cali
 
 ## Check patterns (continuous until `stop_pattern()`)
 
-`zap_all_coords()`, `zap_site(n)`, `check_scanner_calibration()`, `draw_brain_outline()`, `draw_areas([i, j])`.
+`zap_all_coords()`, `zap_site(n)`, `check_scanner_calibration()`, `draw_brain_outline()`, `draw_areas([i, j])`. `stop_pattern()` never touches a trial armed from the API or the server.
 
 ## Server and client
 

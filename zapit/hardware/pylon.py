@@ -1,14 +1,23 @@
 """Basler camera backend via pypylon.
 
 Untested against hardware in this port: it follows the pypylon samples and the
-upstream MATLAB settings (gain 2, 25 fps, manual exposure). File an issue with
+lab's camera defaults (gain 2 dB, 25 fps, manual exposure). File an issue with
 the traceback if a camera misbehaves.
+
+Feature access goes through ``_node``: pypylon's attribute lookup returns a
+parameter object for any name, valid or not, so ``hasattr`` cannot tell which
+features a camera has. Newer (SFNC 2) cameras name features ``ExposureTime``,
+``Gain`` and ``AcquisitionFrameRate``; older ones ``ExposureTimeAbs``,
+``GainRaw`` and ``AcquisitionFrameRateAbs``.
 """
 from __future__ import annotations
 
 import numpy as np
 
 from zapit.hardware.camera import Camera, ThreadedGrabber
+
+DEFAULT_GAIN_DB = 2.0
+DEFAULT_FRAME_RATE = 25.0
 
 
 class BaslerCamera(Camera):
@@ -20,30 +29,62 @@ class BaslerCamera(Camera):
         devices = factory.EnumerateDevices()
         if not devices:
             raise RuntimeError("No Basler cameras found")
+        # connectionIndex is 0-based: 0 is the first camera listed below.
         idx = int(settings["camera"].get("connectionIndex", 0))
-        idx = idx if 0 <= idx < len(devices) else 0
         for i, d in enumerate(devices):
             print(f"{'*' if i == idx else ' '} camera {i}: {d.GetModelName()} {d.GetSerialNumber()}")
+        if not 0 <= idx < len(devices):
+            raise ValueError(f"camera.connectionIndex {idx} is out of range: "
+                             f"{len(devices)} camera(s) found, indices start at 0")
         self._cam = pylon.InstantCamera(factory.CreateDevice(devices[idx]))
         self._cam.Open()
-        self._cam.PixelFormat.SetValue("Mono8")
-        self._sensor = (int(self._cam.SensorWidth.GetValue()), int(self._cam.SensorHeight.GetValue()))
-        try:
-            self._cam.GainAuto.SetValue("Off")
-            self._cam.Gain.SetValue(2.0)
-        except Exception:
-            pass
-        try:
-            self._cam.ExposureAuto.SetValue("Off")
-        except Exception:
-            pass
-        try:
-            self._cam.AcquisitionFrameRateEnable.SetValue(True)
-            self._cam.AcquisitionFrameRate.SetValue(25.0)
-        except Exception:
-            pass
+        self._node("PixelFormat", writable=True).SetValue("Mono8")
+        for name in ("OffsetX", "OffsetY"):
+            node = self._node(name, writable=True, required=False)
+            if node is not None:
+                node.SetValue(0)
+        # With both offsets at 0, WidthMax and HeightMax are the full sensor in pixels.
+        self._sensor = (int(self._node("WidthMax").GetValue()), int(self._node("HeightMax").GetValue()))
+        self._configure_gain()
+        self._set_enum("ExposureAuto", "Off")
+        self._configure_frame_rate()
         self.exposure = float(settings["camera"]["default_exposure"])
         self._grabber = ThreadedGrabber(self._grab_one)
+
+    # ---- feature helpers ---------------------------------------------------------
+    def _node(self, *names, writable=False, required=True):
+        """First of ``names`` that this camera implements and that is readable (or writable)."""
+        for name in names:
+            node = getattr(self._cam, name)
+            if node.IsValid() and (node.IsWritable() if writable else node.IsReadable()):
+                return node
+        if required:
+            raise RuntimeError(f"Camera has no {'writable' if writable else 'readable'} feature {' or '.join(names)}")
+        return None
+
+    def _set_enum(self, name, value):
+        node = self._node(name, writable=True, required=False)
+        if node is not None:
+            node.SetValue(value)
+
+    def _configure_gain(self):
+        self._set_enum("GainAuto", "Off")
+        gain = self._node("Gain", writable=True, required=False)
+        if gain is not None:
+            gain.SetValue(min(max(DEFAULT_GAIN_DB, float(gain.GetMin())), float(gain.GetMax())))
+            return
+        raw = self._node("GainRaw", writable=True, required=False)
+        if raw is not None:
+            # GainRaw units are model specific, so 2 dB has no fixed raw value; use the lowest gain.
+            raw.SetValue(int(raw.GetMin()))
+
+    def _configure_frame_rate(self):
+        enable = self._node("AcquisitionFrameRateEnable", writable=True, required=False)
+        if enable is not None:
+            enable.SetValue(True)
+        rate = self._node("AcquisitionFrameRate", "AcquisitionFrameRateAbs", writable=True, required=False)
+        if rate is not None:
+            rate.SetValue(min(max(DEFAULT_FRAME_RATE, float(rate.GetMin())), float(rate.GetMax())))
 
     # ---- properties ------------------------------------------------------------
     @property
@@ -77,19 +118,18 @@ class BaslerCamera(Camera):
 
     @property
     def exposure(self):
-        c = self._cam
-        node = c.ExposureTime if hasattr(c, "ExposureTime") else c.ExposureTimeAbs
-        return float(node.GetValue())
+        return float(self._node("ExposureTime", "ExposureTimeAbs").GetValue())
 
     @exposure.setter
     def exposure(self, value):
-        c = self._cam
-        node = c.ExposureTime if hasattr(c, "ExposureTime") else c.ExposureTimeAbs
+        node = self._node("ExposureTime", "ExposureTimeAbs", writable=True)
         node.SetValue(max(float(node.GetMin()), min(float(node.GetMax()), float(value))))
 
     # ---- acquisition -----------------------------------------------------------
     def _grab_one(self):
         res = self._cam.RetrieveResult(1000, self._pylon.TimeoutHandling_Return)
+        if not res.IsValid():
+            return None  # timed out, no frame this round
         try:
             if res.GrabSucceeded():
                 return self._orient(np.array(res.Array, copy=True))

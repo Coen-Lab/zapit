@@ -54,8 +54,7 @@ def rotation_matrix(theta: float) -> np.ndarray:
 class Similarity:
     """2-D similarity transform  y = s R x + t  stored as a 3x3 matrix.
 
-    Fitted from commanded beam positions (x) to observed positions (y), like the
-    upstream ``fitgeotrans(..., 'similarity')``.
+    Fitted by least squares from commanded beam positions (x) to observed positions (y).
     """
     matrix: np.ndarray  # 3x3 homogeneous
 
@@ -116,7 +115,7 @@ class ScannerMapping:
     """Convert positions in the camera image into scanner voltages.
 
     Holds the camera scale, the nominal volts-per-pixel and the (optional) fitted
-    scanner calibration. Mirrors upstream ``mmToVolt`` and ``pixelToVolt``.
+    scanner calibration.
     """
 
     def __init__(self, microns_per_pixel: float, volts_per_pixel: float,

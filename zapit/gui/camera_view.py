@@ -20,6 +20,7 @@ DEFAULT_STYLES = {
     "calib_current": dict(size=18, pen=pg.mkPen("r", width=3), brush=None),
     "calib_all": dict(size=14, pen=pg.mkPen("g", width=2), brush=None),
     "bregma": dict(size=12, pen=pg.mkPen("r", width=2), brush=None),
+    "ref_point": dict(size=12, pen=pg.mkPen("r", width=2), brush=None),
     "last_point": dict(size=16, pen=pg.mkPen("y", width=2), brush=None, symbol="+"),
     "last_detected": dict(size=12, pen=pg.mkPen("c", width=2), brush=None),
     "stim_sites": dict(size=10, pen=pg.mkPen("w", width=1), brush=None),

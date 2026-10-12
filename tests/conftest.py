@@ -22,7 +22,7 @@ def model():
 @pytest.fixture
 def ready_model(model, data_dir):
     """Simulated model with a config loaded and unity calibrations, ready to stimulate."""
-    model.scanners_calibrated = True   # unity scanner mapping, as the upstream tests do
+    model.scanners_calibrated = True   # unity scanner mapping: waveforms then match the reference data
     model.apply_unity_sample_calib()
     model.load_stim_config(data_dir / "uniAndBilateral_5_conditions.yml")
     return model

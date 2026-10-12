@@ -35,6 +35,8 @@ from zapit.transforms import ScannerMapping, Similarity, rotate_and_scale
 
 STATES = ("idle", "stim", "rampdown")
 LOG_STEM = "zapit_log_"
+# A good scanner fit leaves tens of microns; a mirrored view or a wrong scale leaves millimetres.
+MAX_CALIBRATION_RESIDUAL_UM = 100.0
 
 
 @dataclass
@@ -58,6 +60,8 @@ class Zapit:
         self.settings_path = Path(settings_path) if settings_path else settings_mod.find_settings_file()
         self.settings = settings_mod.load_settings(self.settings_path, write_back=settings_path is None)
         self._settings_read_only = settings_path is not None
+        # A rig must not stimulate on shipped defaults (laser range, scanner scale); simulation may.
+        self.settings_unedited = not simulated and settings_mod.is_unedited_default(self.settings)
 
         # Observable state
         self.on_state = Signal("state")
@@ -69,8 +73,11 @@ class Zapit:
         self.on_settings = Signal("settings")
 
         self._state = "idle"
+        self._trial_id = 0          # bumped by every send_samples, so a late ramp-down stop cannot hit a newer trial
+        self._pattern_running = False
         self.stim_config: StimConfig | None = None
         self.experiment_path: Path | None = None
+        self._log_files: tuple[Path, Path] | None = None   # (parameter log, trials csv) of this session
         self.last_condition: int = 0
         self.transform: Similarity | None = None
         self.scanners_calibrated = False
@@ -116,11 +123,12 @@ class Zapit:
         self.sim_true_transform = Similarity(np.array([[1.04 * np.cos(0.05), -1.04 * np.sin(0.05), 0.35],
                                                        [1.04 * np.sin(0.05), 1.04 * np.cos(0.05), -0.2],
                                                        [0, 0, 1]]))
-        nominal = ScannerMapping(self.mapping.microns_per_pixel, self.mapping.volts_per_pixel,
-                                 self.mapping.invert_x, self.mapping.invert_y)
+        # The physical scanner: +X volts moves the beam along +sensor columns. The invert settings are the
+        # user's correction for a mirrored view, so they belong to the model, never to the simulated physics.
+        physical = ScannerMapping(self.mapping.microns_per_pixel, self.mapping.volts_per_pixel)
 
         def beam_pixel():
-            cmd_mm = nominal.volts_to_mm(daq.beam_volts)[0]
+            cmd_mm = physical.volts_to_mm(daq.beam_volts)[0]
             true_mm = self.sim_true_transform.forward(cmd_mm)[0]
             px = true_mm / self.mapping.mm_per_pixel + np.asarray(cam.sensor_size) / 2
             # The spot saturates the sensor at modest powers, as a real beam does.
@@ -133,7 +141,25 @@ class Zapit:
     # ================================================================== state and settings
     @property
     def state(self) -> str:
+        # A finite trial ends by itself; report that rather than a stale "stim".
+        if self._state == "stim" and self.daq.ao_mode() == "finite" and self.daq.is_ao_done():
+            self.state = "idle"
         return self._state
+
+    @property
+    def trial_active(self) -> bool:
+        """A trial is armed, playing or ramping down: the AO lines belong to it."""
+        return self.state in ("stim", "rampdown") and self.daq.ao_mode() is not None
+
+    def _refuse_during_trial(self, what: str):
+        if self.trial_active:
+            raise NotReadyError(f"Cannot {what} while a trial is armed or playing; stop it first")
+
+    def _require_rig_settings(self):
+        if self.settings_unedited:
+            raise NotReadyError(f"The settings file {self.settings_path} still holds the shipped defaults. "
+                                f"Edit it for this rig first (docs/settings.md), or migrate an existing rig "
+                                f"with scripts/migrate_rig.py, then restart")
 
     @state.setter
     def state(self, value: str):
@@ -169,16 +195,23 @@ class Zapit:
     def close(self):
         print("Shutting down Zapit")
         try:
-            self.stop_opto_stim(0)
-        except Exception:
-            pass
-        try:
-            self.set_laser_control_volts(0)
-            self.zero_scanners()
-        except Exception:
-            pass
+            self._force_idle()
+        except Exception as e:
+            print(f"Could not zero the outputs on shutdown: {e}")
         self.cam.close()
         self.daq.close()
+
+    def _force_idle(self):
+        """Drop any clocked task and put laser 0 V, scanners at 0 V. No ramp."""
+        with self.lock:
+            self._trial_id += 1
+            self._pattern_running = False
+            self.daq.clear_do()
+            self.daq.clear_ao()
+            self._last_xy_volts = np.zeros(2)
+            self._last_laser_volts = 0.0
+            self.daq.write_unclocked([0.0, 0.0, 0.0, 0.0])
+            self.state = "idle"
 
     # ================================================================== coordinates
     @property
@@ -204,6 +237,8 @@ class Zapit:
     # ================================================================== beam and laser
     def set_laser_control_volts(self, volts: float):
         with self.lock:
+            # An on-demand write takes the AO lines from a clocked task, which would silently drop a trial.
+            self._refuse_during_trial("set the laser")
             self._last_laser_volts = float(volts)
             self.daq.write_unclocked([*self._last_xy_volts, self._last_laser_volts, 0.0])
 
@@ -213,6 +248,7 @@ class Zapit:
     def move_beam_volts(self, xy):
         xy = np.asarray(xy, dtype=float).ravel()
         with self.lock:
+            self._refuse_during_trial("move the beam")
             self._last_xy_volts = xy.copy()
             self.daq.write_unclocked([*xy, self._last_laser_volts, 0.0])
 
@@ -293,14 +329,21 @@ class Zapit:
         Emits ``on_calibration_point`` after each detected point so a GUI can draw
         progress. Set ``abort_calibration`` to stop early. Returns True on success.
         """
+        # Cleared on entry, before any wait, so a cancel pressed straight after starting is kept.
+        self.abort_calibration = False
         settle = (0.05 if self.simulated else 0.1) if settle_s is None else settle_s
         cs = self.settings["calibrateScanners"]
         self.set_laser_mw(0)
         time.sleep(settle)
         self.cam.exposure = cs["beam_calib_exposure"]
         self.wipe_scanner_calib()
-        self.abort_calibration = False
         grid = self.scanner_calibration_points()
+        if len(grid) < 4:
+            print(f"Scanner calibration needs at least 4 grid points but the grid has {len(grid)}: "
+                  f"reduce calibrateScanners.pointSpacingInMM or bufferMM, or enlarge the ROI")
+            self.set_laser_mw(0)
+            self.cam.exposure = self.settings["camera"]["default_exposure"]
+            return False
         nominal_mapping = ScannerMapping(self.mapping.microns_per_pixel, self.mapping.volts_per_pixel,
                                          self.mapping.invert_x, self.mapping.invert_y)
         try:
@@ -318,10 +361,24 @@ class Zapit:
                 if m is not None:
                     self.calibration_data.append(m)
                     self.on_calibration_point.emit(m)
-            if len(self.calibration_data) < 4:
-                print(f"Scanner calibration failed: only {len(self.calibration_data)} points detected")
+            if self.abort_calibration:
+                print("Scanner calibration cancelled")
+                self.wipe_scanner_calib()
                 return False
-            self.fit_scanner_transform()
+            if len(self.calibration_data) < 4:
+                print(f"Scanner calibration failed: only {len(self.calibration_data)} of {len(grid)} points detected")
+                self.calibration_data = []
+                return False
+            tf = self.fit_scanner_transform()
+            target = np.array([m.target_mm for m in self.calibration_data])
+            actual = np.array([m.actual_mm for m in self.calibration_data])
+            mean_um = float(tf.residuals(target, actual).mean() * 1e3)
+            if mean_um > MAX_CALIBRATION_RESIDUAL_UM:
+                print(f"Scanner calibration rejected: mean residual {mean_um:.0f} um is above "
+                      f"{MAX_CALIBRATION_RESIDUAL_UM:.0f} um. If the image is mirrored relative to the beam "
+                      f"(a camera flip), set scanners.invertXscanner or invertYscanner to match, then recalibrate")
+                self.wipe_scanner_calib()
+                return False
             return True
         finally:
             self.cam.exposure = self.settings["camera"]["default_exposure"]
@@ -345,6 +402,7 @@ class Zapit:
 
     def measure_pointing_accuracy(self, points_mm: np.ndarray | None = None, settle_s: float | None = None) -> list[calib.SpotMeasurement]:
         """Point the calibrated beam at each position and measure where it lands."""
+        self.abort_calibration = False
         settle = (0.05 if self.simulated else 0.1) if settle_s is None else settle_s
         pts = self.scanner_calibration_points() if points_mm is None else np.atleast_2d(points_mm)
         cs = self.settings["calibrateScanners"]
@@ -356,7 +414,6 @@ class Zapit:
         background = self.average_frames(5)
         self.set_laser_mw(cs["calibration_power_mW"])
         time.sleep(settle)
-        self.abort_calibration = False
         try:
             for p in pts:
                 if self.abort_calibration:
@@ -417,15 +474,20 @@ class Zapit:
                   f"maximum of {self.laser.max_mw:.2f} mW and will be capped")
         self.stim_config = cfg
         self.last_condition = 0
-        self._remember_config(cfg)
+        self._log_files = None      # trials under a new config go to a new log pair
         self.on_stim_config.emit(cfg)
+        try:
+            self._remember_config(cfg)
+        except OSError as e:
+            print(f"Could not update the recent configs list: {e}")
         return cfg
 
     def _remember_config(self, cfg: StimConfig):
         if not cfg.path:
             return
-        recent = [r for r in (self.settings["cache"]["previouslyLoadedFiles"] or []) if r.get("path") != str(cfg.path)]
-        recent.insert(0, {"path": str(cfg.path), "time": _dt.datetime.now().isoformat(timespec="seconds")})
+        path = str(Path(cfg.path).resolve())
+        recent = [r for r in (self.settings["cache"]["previouslyLoadedFiles"] or []) if r.get("path") != path]
+        recent.insert(0, {"path": path, "time": _dt.datetime.now().isoformat(timespec="seconds")})
         self.settings["cache"]["previouslyLoadedFiles"] = recent[:10]
         self.save_settings()
 
@@ -463,6 +525,7 @@ class Zapit:
     # ================================================================== experiment API
     def set_experiment_path(self, path: str | Path | None):
         self.experiment_path = Path(path) if path else None
+        self._log_files = None
         self.on_experiment_path.emit(self.experiment_path)
 
     def send_samples(self, condition: int | None = None, laser_on: bool | None = True,
@@ -480,10 +543,13 @@ class Zapit:
         Raises NotReadyError if not calibrated / loaded or a finite trial is still playing.
         """
         cfg = self.stim_config
+        self._require_rig_settings()
         if not self.is_ready_to_stim:
             raise NotReadyError("Not ready: scanners and sample must be calibrated and a config loaded")
+        if self._pattern_running:
+            raise NotReadyError("A check pattern is running; stop it first")
         if self.daq.is_finite_playing():
-            raise NotReadyError("A finite-duration stimulus is still playing")
+            raise NotReadyError("A finite-duration stimulus is armed or playing; it must finish or be stopped")
         n = cfg.n_conditions
         if condition is not None and condition != -1:
             if not (isinstance(condition, (int, np.integer)) and 1 <= condition <= n):
@@ -500,17 +566,18 @@ class Zapit:
         if laser_power_mw is not None and laser_power_mw == -1:
             laser_power_mw = None
         avg_mw = 0.0 if not laser_on else (cond.laser_power_mw if laser_power_mw is None else float(laser_power_mw))
-
-        if logging and self.experiment_path and self.experiment_path.is_dir():
-            self._log_trial(condition, avg_mw, hardware_triggered, stim_duration_s, laser_on)
         if verbose:
             print(f"Stimulating condition {condition} (laser {'on' if laser_on else 'off'})")
 
         with self.lock:
             cycle = self.chan_samples()[:, :, condition - 1].copy()
             peak_mw = cfg.peak_power_mw(condition - 1, self.blanking.blanking_time_ms, avg_mw if laser_on else 0.0)
-            # Ephys waveforms peak above 1: assumes power is linear in control voltage (upstream caveat).
+            # Ephys waveforms peak above 1, which assumes power is linear in control voltage.
             cycle[:, 2] *= self.laser.mw_to_control(peak_mw) if laser_on else 0.0
+            if cycle[:, 2].max() > self.laser.max_cv:
+                print(f"WARNING: condition {condition} would drive the laser to {cycle[:, 2].max():.2f} V, above its "
+                      f"{self.laser.max_cv:.2f} V maximum; scaling the laser waveform down to the maximum")
+                cycle[:, 2] *= self.laser.max_cv / cycle[:, 2].max()
             finite = stim_duration_s is not None and stim_duration_s > 0
             waves = wf.finite_trial(cycle, self.daq.sample_rate, stim_duration_s, cond.rampdown_ms, start_delay_s) if finite else cycle
             if not laser_on:
@@ -522,12 +589,20 @@ class Zapit:
             else:
                 self.daq.clear_do()
             self.daq.start()
+            self._trial_id += 1
             self.state = "stim"
+            # Logged once the DAQ has accepted the trial, so a refused trial leaves no row.
+            if logging and self.experiment_path and self.experiment_path.is_dir():
+                self._log_trial(condition, avg_mw, hardware_triggered, stim_duration_s, laser_on)
         return TrialResult(condition, laser_on, avg_mw, bool(hardware_triggered),
                            float(stim_duration_s) if finite else -1.0, waves)
 
     def stop_opto_stim(self, rampdown_ms: float | None = None):
-        """Ramp the laser down over ``rampdown_ms`` (config default) and stop a continuous stimulus."""
+        """Ramp the laser down over ``rampdown_ms`` (config default) and stop a continuous stimulus.
+
+        A finite trial that is armed but not yet triggered is disarmed. One that is
+        playing is left to finish by itself (it carries its own ramp-down).
+        """
         with self.lock:
             if self.daq.ao_mode() is None:
                 self.state = "idle"
@@ -536,39 +611,50 @@ class Zapit:
                 if self.daq.is_ao_done():
                     self.daq.stop()
                     self.state = "idle"
+                elif not self.daq.has_started():
+                    self._stop_and_zero()
+                    print("Disarmed a finite trial that had not been triggered")
                 return
             if rampdown_ms is None:
                 i = max(self.last_condition - 1, 0)
                 rampdown_ms = self.stim_config.conditions[i].rampdown_ms if self.stim_config else 0
             last = self.daq.last_waveform
             if last is None or self.daq.is_ao_done():
-                self.daq.stop()
-                self.state = "idle"
+                self._stop_and_zero()
                 return
             self.state = "rampdown"
             for buf in wf.rampdown_buffers(last, self.daq.sample_rate, rampdown_ms):
                 self.daq.write_ao(buf)
-            threading.Timer(0.2, self._delayed_stop).start()
+            threading.Timer(0.2, self._delayed_stop, args=(self._trial_id,)).start()
 
-    def _delayed_stop(self):
+    def _delayed_stop(self, trial_id: int):
         with self.lock:
-            if self.daq.ao_mode() == "continuous":
-                self.daq.stop()
-            self.state = "idle"
+            if trial_id != self._trial_id:
+                return  # a newer trial was armed during the ramp-down; it owns the DAQ now
+            self._stop_and_zero()
+
+    def _stop_and_zero(self):
+        """Stop the clocked task and set laser 0 V, scanners 0 V: a stopped AO task holds its last sample."""
+        self.daq.stop()
+        self.daq.clear_do()
+        self._last_xy_volts = np.zeros(2)
+        self._last_laser_volts = 0.0
+        self.daq.write_unclocked([0.0, 0.0, 0.0, 0.0])
+        self.state = "idle"
 
     def _log_trial(self, condition: int, power_mw: float, hardware_triggered: bool, duration_s: float, laser_on: bool):
-        d = self.experiment_path
-        logs = sorted(d.glob(f"{LOG_STEM}*.yml"))
-        if not logs:
-            logs = [self.stim_config.log_parameters(d, {"hostname": socket.gethostname()})]
-            print(f"Wrote stimulus parameter log {logs[0]}")
-        trials = d / logs[-1].name.replace("_log_", "_trials_").replace(".yml", ".csv")
+        """One parameter log and one trials CSV per (experiment path, config) for this session."""
+        if self._log_files is None or self._log_files[0].parent != self.experiment_path:
+            log = self.stim_config.log_parameters(self.experiment_path, {"hostname": socket.gethostname()})
+            print(f"Wrote stimulus parameter log {log}")
+            self._log_files = (log, log.with_name(log.name.replace("_log_", "_trials_")).with_suffix(".csv"))
+        trials = self._log_files[1]
         new = not trials.exists()
         with open(trials, "a", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
             if new:
                 w.writerow(["timestamp", "stim_index", "laser_power", "hardware_triggered", "stim_duration", "laser_on"])
-            w.writerow([_dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), condition, f"{power_mw:.2f}",
+            w.writerow([_dt.datetime.now().isoformat(sep=" ", timespec="milliseconds"), condition, f"{power_mw:.2f}",
                         int(hardware_triggered), f"{duration_s:.2f}", int(laser_on)])
 
     # ================================================================== laser calibration
@@ -604,17 +690,30 @@ class Zapit:
         if p.exists():
             self.laser.fit = LaserFit.load(p)
             print(f"Loaded laser fit from {p}")
+            return
+        unconverted = p.with_suffix(".mat")
+        if unconverted.exists():
+            raise RuntimeError(f"{unconverted} is a laser fit in the old format and is not read. Convert it with "
+                               f"`uv run python scripts/migrate_rig.py`, or delete it and refit the laser")
+        print(f"No laser fit at {p}: using a linear map between laser.laserMinMaxControlVolts and laserMinMax_mW")
 
     # ================================================================== check / demo patterns
     def _play_pattern(self, waves: np.ndarray, rate: float, task_name: str):
+        self._require_rig_settings()
         with self.lock:
+            self._refuse_during_trial("start a check pattern")
             self.daq.clear_do()
             self.move_beam_volts(waves[0, :2])
             self.daq.prepare_ao(waves, rate=rate, finite=False, hardware_triggered=False, task_name=task_name)
             self.daq.start()
+            self._pattern_running = True
 
     def stop_pattern(self):
+        """Stop a check pattern. Never touches a trial armed or playing from the API or server."""
         with self.lock:
+            if self.trial_active:
+                return
+            self._pattern_running = False
             self.daq.clear_ao()
             self.set_laser_mw(0)
             self.state = "idle"
