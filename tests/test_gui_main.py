@@ -1,5 +1,6 @@
 """Offscreen tests of the main GUI window driven directly through its methods."""
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -232,6 +233,46 @@ def test_finite_trial_unlocks_by_itself(window):
     assert wait_until(lambda: not window.trial_locked, timeout_s=10)
     assert window.state_label.text() == "State: idle"
     assert window.scanner_panel.point_btn.isEnabled()
+
+
+def test_window_keeps_ticking_through_a_server_ramp_down(window):
+    model = make_ready(window)
+    ticks = []
+    window.frame_timer.timeout.connect(lambda: ticks.append(time.monotonic()))
+    write_ao = model.daq.write_ao
+
+    def blocking_write(w):                   # as on NI: a write returns once its buffer region has played
+        time.sleep(w.shape[0] / model.daq.sample_rate)
+        write_ao(w)
+    model.daq.write_ao = blocking_write
+    model.send_samples(condition=1, hardware_triggered=False, logging=False)
+    assert wait_until(lambda: window.trial_locked, timeout_s=5)
+    ramp = threading.Thread(target=model.stop_opto_stim, args=(600,))   # the server thread holds the lock throughout
+    t0 = time.monotonic()
+    ramp.start()
+    process_events(800)
+    ramp.join()
+    gaps = np.diff([t0] + ticks)
+    assert gaps.max() < 0.3                  # one 600 ms freeze before poll_state
+    assert wait_until(lambda: not window.trial_locked, timeout_s=5)
+
+
+def test_laser_sweep_stops_a_check_pattern_and_waits_out_a_trial(window):
+    model = make_ready(window)
+    window.open_laser_dialog()
+    dialog = window._laser_dialog
+    window.sample_panel.zap_all_btn.setChecked(True)
+    assert model._pattern_running and window.pattern_running()
+    dialog.run_sweep()
+    assert wait_until(lambda: dialog.run_btn.isEnabled(), timeout_s=10)
+    assert not window.sample_panel.zap_all_btn.isChecked() and not window.pattern_running()
+    assert window.scanner_panel.laser_btn.text() == "Laser: Off"
+    model.send_samples(condition=1, hardware_triggered=True, logging=False)   # not refused as "pattern running"
+    assert wait_until(lambda: window.trial_locked, timeout_s=5)
+    assert not dialog.run_btn.isEnabled()
+    model.stop_opto_stim()
+    assert wait_until(lambda: dialog.run_btn.isEnabled(), timeout_s=5)
+    dialog.close()
 
 
 def test_load_garbage_config_keeps_running(window, tmp_path, monkeypatch):

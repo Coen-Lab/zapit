@@ -278,6 +278,61 @@ def test_disarmed_row_follows_its_trial_when_the_path_changes(ready_model, tmp_p
     assert not second.exists() or not list(second.iterdir())
 
 
+def _lock(path):
+    """Stands in for Excel holding a CSV open: appends fail with PermissionError."""
+    import os
+    import stat
+    os.chmod(path, stat.S_IREAD)
+    return lambda: os.chmod(path, stat.S_IWRITE)
+
+
+def test_trial_the_log_cannot_record_is_never_armed(ready_model, tmp_path):
+    ready_model.set_experiment_path(tmp_path)
+    ready_model.send_samples(condition=1, stim_duration_s=0.05, hardware_triggered=False)
+    time.sleep(0.5)
+    trials = next(tmp_path.glob("zapit_trials_*.csv"))
+    unlock = _lock(trials)
+    try:
+        with pytest.raises(NotReadyError, match="cannot be written"):
+            ready_model.send_samples(condition=2, stim_duration_s=1.0, hardware_triggered=True)
+        assert ready_model.state == "idle" and not ready_model.trial_active
+        ready_model.daq.simulate_trigger()             # the client's next TTL
+        assert not ready_model.daq.is_finite_playing()
+    finally:
+        unlock()
+    ready_model.send_samples(condition=3, stim_duration_s=1.0, hardware_triggered=True)   # writable again: arms
+    assert [r.split(",")[1] for r in _rows(trials)] == ["1", "3"]
+
+
+def test_disarm_with_an_unwritable_log_still_stops(ready_model, tmp_path, capsys):
+    ready_model.set_experiment_path(tmp_path)
+    ready_model.send_samples(condition=2, hardware_triggered=True)
+    unlock = _lock(next(tmp_path.glob("zapit_trials_*.csv")))
+    try:
+        ready_model.stop_opto_stim()                   # the outputs are already safe: a warning, not an error
+    finally:
+        unlock()
+    assert ready_model.state == "idle" and "could not be written" in capsys.readouterr().out
+
+
+def test_closing_with_a_trial_waiting_for_its_ttl_logs_the_disarm(model, data_dir, tmp_path):
+    model.scanners_calibrated = True
+    model.apply_unity_sample_calib()
+    model.load_stim_config(data_dir / "uniAndBilateral_5_conditions.yml")
+    model.set_experiment_path(tmp_path)
+    model.send_samples(condition=4, stim_duration_s=1.0, hardware_triggered=True)
+    model.close()
+    events = [r.split(",")[-1] for r in _rows(next(tmp_path.glob("zapit_trials_*.csv")))]
+    assert events == ["armed", "disarmed"]
+
+
+def test_on_demand_write_ends_a_check_pattern(ready_model):
+    ready_model.zap_all_coords()
+    ready_model.set_laser_mw(0.5)                      # what a laser sweep does: the write takes the AO lines
+    assert ready_model.daq.ao_mode() is None
+    ready_model.send_samples(condition=1, hardware_triggered=True)          # not refused as "pattern running"
+
+
 def test_capped_power_is_flagged_in_the_log(ready_model, tmp_path):
     ready_model.set_experiment_path(tmp_path)
     for c in ready_model.stim_config.conditions:

@@ -39,6 +39,29 @@ def test_in_place_migration_never_says_to_delete_its_folder(data_dir, tmp_path, 
     s.load_settings(tmp_path / s.SETTINGS_FILENAME)
 
 
+def test_converting_a_converted_folder_again_is_refused(data_dir, tmp_path, capsys):
+    shutil.copytree(data_dir / "legacy_rig", tmp_path, dirs_exist_ok=True)
+    old = yaml.safe_load((tmp_path / s.SETTINGS_FILENAME).read_text())
+    old["camera"]["connectionIndex"] = 3                       # the fourth camera, 1-based
+    (tmp_path / s.SETTINGS_FILENAME).write_text(yaml.safe_dump(old))
+    original = (tmp_path / s.SETTINGS_FILENAME).read_text()
+    args = ["--from", str(tmp_path), "--to", str(tmp_path)]
+    assert migrate_rig.main(args) == 0
+    capsys.readouterr()
+    assert migrate_rig.main(args) == 1                         # the command the app printed, run twice
+    assert "already in the current format" in capsys.readouterr().out
+    assert yaml.safe_load((tmp_path / s.SETTINGS_FILENAME).read_text())["camera"]["connectionIndex"] == 2
+    assert (tmp_path / (s.SETTINGS_FILENAME + ".bak")).read_text() == original   # the 1.x file, untouched
+
+
+def test_an_earlier_backup_is_never_replaced(data_dir, tmp_path):
+    shutil.copytree(data_dir / "legacy_rig", tmp_path, dirs_exist_ok=True)
+    (tmp_path / (s.SETTINGS_FILENAME + ".bak")).write_text("earlier\n")
+    report = migrate_rig.migrate_settings(tmp_path, tmp_path)
+    assert (tmp_path / (s.SETTINGS_FILENAME + ".bak")).read_text() == "earlier\n"
+    assert any(s.SETTINGS_FILENAME + ".bak2" in line for line in report)
+
+
 def test_old_remote_tcp_client_is_reported_not_opened():
     out, notes = migrate_rig.convert_settings({"tcpServer": {"IP": "172.24.243.49", "port": 1488, "enable": True}})
     assert out["server"] == {"enable": True, "bind": "tcp://127.0.0.1:5555"}

@@ -230,9 +230,10 @@ class Zapit:
         self.daq.close()
 
     def _force_idle(self):
-        """Drop any clocked task and put laser 0 V, scanners at 0 V. No ramp."""
+        """Drop any clocked task and put laser 0 V, scanners at 0 V. No ramp. A trial still waiting for its
+        trigger gets its ``disarmed`` row, as from ``stop``."""
         with self.lock:
-            self._trial_id += 1
+            untriggered = self._state == "stim" and self.daq.has_clocked_task and not self.daq.has_started()
             self._pattern_running = False
             self.daq.clear_do()
             self.daq.clear_ao()
@@ -240,6 +241,9 @@ class Zapit:
             self._last_laser_volts = 0.0
             self.daq.write_unclocked([0.0, 0.0, 0.0, 0.0])
             self.state = "idle"
+            if untriggered:
+                self._log_disarmed()
+            self._trial_id += 1   # a pending ramp-down stop must not act after this
 
     # ================================================================== coordinates
     @property
@@ -282,6 +286,7 @@ class Zapit:
             self._refuse_during_trial("set the laser")
             self._last_laser_volts = float(volts)
             self.daq.write_unclocked([*self._last_xy_volts, self._last_laser_volts, 0.0])
+            self._pattern_running = False   # the write took the AO lines from any check pattern
 
     def set_laser_mw(self, mw: float):
         self.set_laser_control_volts(self.laser.mw_to_control(mw))
@@ -292,6 +297,7 @@ class Zapit:
             self._refuse_during_trial("move the beam")
             self._last_xy_volts = xy.copy()
             self.daq.write_unclocked([*xy, self._last_laser_volts, 0.0])
+            self._pattern_running = False   # the write took the AO lines from any check pattern
 
     def move_beam_mm(self, xy_mm):
         self.move_beam_volts(self.mapping.mm_to_volts(xy_mm)[0])
@@ -632,6 +638,9 @@ class Zapit:
             waves = wf.finite_trial(cycle, self.daq.sample_rate, stim_duration_s, cond.rampdown_ms, start_delay_s) if finite else cycle
             if not laser_on:
                 waves[:, 2] = 0
+            # A trial the log cannot record is refused before the DAQ is armed: an armed trial behind an error
+            # reply would still be fired by the client's next TTL, with a condition nobody recorded.
+            trials = self._trials_file() if logging and self.experiment_path and self.experiment_path.is_dir() else None
             if self.state == "rampdown":
                 # The ramp has all but finished; zero the outputs so the new trial never arms over a held laser value.
                 self._stop_and_zero()
@@ -647,10 +656,15 @@ class Zapit:
             self.state = "stim"
             # Logged once the DAQ has accepted the trial, so a refused trial leaves no row.
             self._logged_trial = None
-            if logging and self.experiment_path and self.experiment_path.is_dir():
+            if trials is not None:
                 row = [condition, f"{avg_mw:.2f}", int(hardware_triggered), f"{stim_duration_s:.2f}",
                        int(laser_on), int(capped)]
-                trials = self._log_trial(row, "armed" if hardware_triggered else "started")
+                try:
+                    _append_trial_row(trials, row, "armed" if hardware_triggered else "started")
+                except OSError as e:
+                    # Writable a moment ago; the trial still must not stay armed unrecorded.
+                    self._stop_and_zero()
+                    raise NotReadyError(f"Trial not armed: the trials log {trials} cannot be written ({e})") from e
                 self._logged_trial = (self._trial_id, trials, row)
         return TrialResult(condition, laser_on, avg_mw, bool(hardware_triggered),
                            float(stim_duration_s) if finite else -1.0, waves)
@@ -674,11 +688,7 @@ class Zapit:
                 # Nothing has played, and a ramp-down written into a task waiting for its trigger
                 # would wait for buffer space that never frees.
                 self._stop_and_zero()
-                if self._logged_trial is not None and self._logged_trial[0] == self._trial_id:
-                    # Beside its armed row, wherever the experiment path points now; once only.
-                    _, trials, row = self._logged_trial
-                    self._logged_trial = None
-                    _append_trial_row(trials, row, "disarmed")
+                self._log_disarmed()
                 print("Disarmed a trial that had not been triggered")
                 return
             if mode == "finite":
@@ -711,16 +721,36 @@ class Zapit:
         self.daq.write_unclocked([0.0, 0.0, 0.0, 0.0])
         self.state = "idle"
 
-    def _log_trial(self, row: list, event: str) -> Path:
-        """Append ``row`` (condition, power, hardware_triggered, duration, laser_on, power_capped) with a
-        timestamp and ``event`` to the trials CSV, and return that CSV. One parameter log and one trials
-        CSV per (experiment path, config) for this session."""
-        if self._log_files is None or self._log_files[0].parent != self.experiment_path:
-            log = self.stim_config.log_parameters(self.experiment_path, {"hostname": socket.gethostname()})
-            print(f"Wrote stimulus parameter log {log}")
-            self._log_files = (log, log.with_name(log.name.replace("_log_", "_trials_")).with_suffix(".csv"))
-        _append_trial_row(self._log_files[1], row, event)
-        return self._log_files[1]
+    def _trials_file(self) -> Path:
+        """The trials CSV for this experiment path and config, its parameter log written first, and proven
+        writable. One parameter log and one trials CSV per (experiment path, config) for this session.
+        Raises NotReadyError naming the file when either cannot be written (Excel locks a CSV it has open)."""
+        try:
+            if self._log_files is None or self._log_files[0].parent != self.experiment_path:
+                log = self.stim_config.log_parameters(self.experiment_path, {"hostname": socket.gethostname()})
+                print(f"Wrote stimulus parameter log {log}")
+                self._log_files = (log, log.with_name(log.name.replace("_log_", "_trials_")).with_suffix(".csv"))
+            trials = self._log_files[1]
+            if trials.exists():   # a new one goes in the folder the parameter log was just written to
+                with open(trials, "a", encoding="utf-8"):
+                    pass
+        except OSError as e:
+            raise NotReadyError(f"Trial not armed: the trials log in {self.experiment_path} cannot be written "
+                                f"({e}). Close it if another program has it open") from e
+        return trials
+
+    def _log_disarmed(self):
+        """A ``disarmed`` row for the current trial if it was logged: beside its armed row, wherever the
+        experiment path points now, and once only. Called with the outputs already safe, so a write
+        failure is reported rather than raised."""
+        if self._logged_trial is None or self._logged_trial[0] != self._trial_id:
+            return
+        _, trials, row = self._logged_trial
+        self._logged_trial = None
+        try:
+            _append_trial_row(trials, row, "disarmed")
+        except OSError as e:
+            print(f"WARNING: the disarmed row could not be written to {trials}: {e}")
 
     # ================================================================== laser calibration
     def generate_laser_calibration_curve(self, min_max_volts=None, step: float = 0.025, n_reads: int | None = None) -> LaserFit:

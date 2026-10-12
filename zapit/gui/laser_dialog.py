@@ -15,10 +15,14 @@ from zapit.gui.bridge import Worker
 class LaserDialog(QDialog):
     """Run and inspect the laser control-voltage to sensor-reading curve."""
 
-    def __init__(self, model, parent=None):
+    def __init__(self, model, parent=None, before_sweep=None):
+        """``before_sweep`` runs on the GUI thread before each sweep; the main window passes its
+        ``release_toggles``, so a check pattern or point mode is stopped and shown off first."""
         super().__init__(parent)
         self.model = model
         self.worker: Worker | None = None
+        self.before_sweep = before_sweep
+        self.trial_locked = False
         self.setWindowTitle("Laser calibration")
         self.resize(700, 500)
 
@@ -63,9 +67,22 @@ class LaserDialog(QDialog):
         self.info.setText(f"Fit: {fit.fit_type}, RMSE {fit.rmse:.4g}, {len(fit.control_values)} points, "
                           f"made {fit.date_made or 'unknown'}")
 
+    def set_trial_locked(self, locked: bool):
+        """A trial owns the outputs: no sweep until it ends."""
+        self.trial_locked = bool(locked)
+        self._update_run_btn()
+
+    def _update_run_btn(self, sweeping: bool | None = None):
+        # The done and failed slots pass sweeping=False: the worker thread may not have returned yet.
+        if sweeping is None:
+            sweeping = self.worker is not None and self.worker.isRunning()
+        self.run_btn.setEnabled(not self.trial_locked and not sweeping)
+
     def run_sweep(self):
-        if self.worker is not None and self.worker.isRunning():
+        if self.trial_locked or (self.worker is not None and self.worker.isRunning()):
             return
+        if self.before_sweep is not None:
+            self.before_sweep()
         self.run_btn.setEnabled(False)
         self.info.setText("Sweeping the laser control voltage...")
         self.worker = Worker(self.model.generate_laser_calibration_curve, parent=self)
@@ -74,11 +91,11 @@ class LaserDialog(QDialog):
         self.worker.start()
 
     def _sweep_done(self, fit):
-        self.run_btn.setEnabled(True)
+        self._update_run_btn(sweeping=False)
         self.show_fit(fit)
 
     def _sweep_failed(self, msg: str):
-        self.run_btn.setEnabled(True)
+        self._update_run_btn(sweeping=False)
         self.info.setText(f"Sweep failed: {msg}")
         QMessageBox.critical(self, "Laser calibration", msg)
 

@@ -46,5 +46,5 @@ GUI tests run offscreen: set `QT_QPA_PLATFORM=offscreen`.
 - A similarity transform cannot reflect. A mirrored camera image needs `scanners.invertXscanner` or `invertYscanner`, not a camera flip alone; the simulated scanner physics ignore those flags, so the simulation shows the same failure as a rig.
 - The simulated camera re-renders when the beam state changes, so calibration tests can use a zero settle time; real cameras need the default settle.
 - `nidaq.py` writes a new buffer into a running continuous task for the ramp-down. If a driver version refuses, stop and restart the task instead.
-- The simulated DAQ keeps state only; it does not reproduce NI's rule that an unclocked write drops the clocked task. The model guard covers it, so test ownership rules against the model, not the DAQ.
+- The simulated DAQ follows NI's rule that an unclocked write deletes the clocked task, so a test that writes on demand mid-trial loses the trial exactly as a rig would. The model's `trial_active` guard is what prevents it; an on-demand write also ends a check pattern (`_pattern_running`).
 - `.gitignore` excludes `bonsai/.bonsai/Packages/` and `Bonsai.exe`; `local_packages/` style folders must be committed if ever added.

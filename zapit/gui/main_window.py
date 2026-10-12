@@ -259,7 +259,8 @@ class MainWindow(QMainWindow):
 
     def open_laser_dialog(self):
         from zapit.gui.laser_dialog import LaserDialog
-        self._laser_dialog = LaserDialog(self.model, self)
+        self._laser_dialog = LaserDialog(self.model, self, before_sweep=self.release_toggles)
+        self._laser_dialog.set_trial_locked(self.trial_locked)
         self._laser_dialog.show()
 
     # ------------------------------------------------------------------ toggles and patterns
@@ -347,6 +348,8 @@ class MainWindow(QMainWindow):
             self.set_status("Trial finished: controls enabled")
         self.scanner_panel.update_enabled()
         self.sample_panel.update_enabled()
+        if self._laser_dialog is not None:
+            self._laser_dialog.set_trial_locked(locked)
 
     def _on_stim_config(self, cfg):
         self.sample_panel.on_stim_config(cfg)

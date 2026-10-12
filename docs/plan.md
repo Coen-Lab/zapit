@@ -39,9 +39,9 @@ The model is free of Qt. It emits plain callbacks (`zapit.events.Signal`) which 
 - After a continuous stimulus ramps down, the task is stopped and the laser and scanners are set to 0 V with an on-demand write, because a stopped AO task holds its last sample. The delayed stop is tied to its trial, so it never stops a trial armed during the ramp-down.
 - The laser waveform is never allowed above `laser.laserMinMaxControlVolts[1]`; the ephys half-sine is scaled down if needed.
 - A scanner calibration whose mean residual exceeds 100 um is rejected (usually a mirrored view needing an invert flag).
-- Trials are logged only after the DAQ accepts them, one parameter log and trials file per experiment folder and config. A trial disarmed before its TTL gets a `disarmed` row beside its `armed` row, even if the experiment path changed in between, and a trial whose power the laser maximum limited is flagged `power_capped`.
+- Trials are logged only after the DAQ accepts them, one parameter log and trials file per experiment folder and config. A trial the log cannot record (the trials CSV open in Excel, which locks it) is refused before the DAQ is armed, so a client's next TTL never fires an unrecorded trial. A trial disarmed before its TTL, by `stop` or by closing Zapit, gets a `disarmed` row beside its `armed` row, even if the experiment path changed in between; that row is written after the outputs are safe, so a failure to write it is a warning. A trial whose power the laser maximum limited is flagged `power_capped`.
 - The model state is read and written under the model lock, so a GUI poll cannot report a newly armed trial as idle and unlock the beam controls over it. The GUI's frame-timer poll (`Zapit.poll_state`) never waits for that lock: while a ramp-down holds it, the poll reports the last state, so the camera view does not freeze for the ramp.
-- A `stop` that ramps down a check pattern also ends it, so the next trial is not refused as "pattern running".
+- A `stop` that ramps down a check pattern also ends it, and so does an on-demand beam or laser write (which takes the AO lines), so the next trial is not refused as "pattern running". The laser calibration sweep stops any pattern in the GUI first and is disabled during a trial.
 
 ## Not verified on hardware
 

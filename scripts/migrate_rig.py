@@ -137,9 +137,13 @@ def migrate_settings(src: Path, dst: Path, *, force: bool = False, dry_run: bool
         raise FileNotFoundError(f"No {settings_mod.SETTINGS_FILENAME} in {src}")
     if dst_file.exists() and not force and src.resolve() != dst.resolve():
         raise FileExistsError(f"{dst_file} already exists; pass --force to replace it")
-    report = [f"settings: {src_file} -> {dst_file}"]
     with open(src_file, encoding="utf-8") as fh:
-        settings, notes = convert_settings(yaml.safe_load(fh))
+        raw = yaml.safe_load(fh)
+    if not settings_mod.old_layout_markers(raw):
+        # Converting a current file again would count the camera index down twice and replace the 1.x backup.
+        raise ValueError(f"{src_file} is already in the current format; nothing to convert")
+    report = [f"settings: {src_file} -> {dst_file}"]
+    settings, notes = convert_settings(raw)
     report += [f"  {n}" for n in notes]
 
     mat = src / "laserFit.mat"
@@ -154,13 +158,27 @@ def migrate_settings(src: Path, dst: Path, *, force: bool = False, dry_run: bool
     if not dry_run:
         dst.mkdir(parents=True, exist_ok=True)
         if dst_file.exists():
-            shutil.copyfile(dst_file, dst_file.with_suffix(".yml.bak"))
+            bak = _unused(dst_file.with_suffix(".yml.bak"))
+            shutil.copyfile(dst_file, bak)
+            report.append(f"kept the replaced settings file as {bak.name}")
         settings_mod.save_settings(settings, dst_file)
         if fit is not None:
             fit.save(settings_mod.laser_fit_path(dst_file))
             if src.resolve() == dst.resolve():
-                mat.rename(mat.with_suffix(".mat.converted"))
+                kept = _unused(mat.with_suffix(".mat.converted"))
+                mat.rename(kept)
+                report.append(f"kept the old laser fit as {kept.name}")
     return report
+
+
+def _unused(path: Path) -> Path:
+    """``path``, or ``path`` with a number appended if it exists, so an earlier backup is never replaced."""
+    n = 2
+    candidate = path
+    while candidate.exists():
+        candidate = path.with_name(f"{path.name}{n}")
+        n += 1
+    return candidate
 
 
 # ----------------------------------------------------------------------------- stimulus configs
@@ -230,8 +248,8 @@ def main(argv=None) -> int:
     if not a.dry_run:
         if src.resolve() == dst.resolve():
             # Converted in place: src now holds the new files, so it must not be deleted.
-            print(f"Done. Check {dst / settings_mod.SETTINGS_FILENAME}. The 1.x originals are kept beside it as "
-                  f"{settings_mod.SETTINGS_FILENAME}.bak and laserFit.mat.converted (if there was one).")
+            print(f"Done. Check {dst / settings_mod.SETTINGS_FILENAME}. The 1.x originals are kept beside it, "
+                  f"under the names listed above.")
         else:
             print(f"Done. Check {dst / settings_mod.SETTINGS_FILENAME}, then delete or archive {src}.")
     return 0

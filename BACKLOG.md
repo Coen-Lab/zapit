@@ -30,3 +30,11 @@
 - The migration searches this checkout's `SETTINGS` folder: that is 1.x's `getInstallPath` for a rig updated in place, and `--from` covers any other.
 - On NI, `has_started` may read 0 microseconds after a software start, so a stop at that instant disarms without a ramp: nothing meaningful has played.
 - No trials-CSV row when a continuous trial stops or a TTL arrives: 1.x logged only the arming, and Bonsai's reply log has the timing.
+
+## Audit 2026-10-12 (fourth, on 4b19317): not recommended (steelman holds)
+
+- Trials are not logged, silently, if the experiment folder disappears after it was set: 1.x behaviour, and Bonsai's reply log still holds every condition.
+- Pylon keeps the previous ROI's last frame until the next grab, where the simulated camera clears it: one frame (40 ms), and the next user action comes seconds later.
+- A `stop` that ramps down a check pattern counts the ramp's buffers at the stimulus sample rate, not the pattern's: only the number of ramp buffers changes, and the outputs still end at 0 V.
+- A config loaded from the GUI is not under the model lock while a server trial arms: a millisecond window, and loading is refused under an armed trial.
+- `tests/data/legacy_rig/laserFit.mat` and the word MATLAB in `scripts/migrate_rig.py`: the converter's test needs a real 1.x file; nothing runs MATLAB.

@@ -153,6 +153,8 @@ This is what the Bonsai example sends.
 {"ok": false, "error": "NotReadyError: Not ready: scanners and sample must be calibrated and a config loaded"}
 ```
 
+A refused `send_samples` never leaves the DAQ armed, so a TTL that follows it plays nothing. That includes a trial the log cannot record, typically because the trials CSV is open in Excel: the error names the file, and arming works again once it is closed.
+
 ### stop
 
 ```json
