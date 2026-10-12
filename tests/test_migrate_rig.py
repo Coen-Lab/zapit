@@ -24,7 +24,7 @@ def test_settings_and_laser_fit_convert(data_dir, tmp_path):
     assert out["camera"]["connectionIndex"] == 0               # 1-based 1 -> 0-based 0
     assert out["server"]["enable"] is True                     # the old TCP switch (off) does not turn Bonsai's server off
     assert [r["path"] for r in out["cache"]["previouslyLoadedFiles"]][0].endswith("a.yml")
-    assert out["cache"]["previouslyLoadedFiles"][0]["time"] == "2023-04-23T12:00:00"   # MATLAB datenum 739000.5
+    assert out["cache"]["previouslyLoadedFiles"][0]["time"] == "2023-04-24T12:00:00"   # MATLAB datenum 739000.5
     fit = LaserFit.load(dst / "laserFit.yml")
     assert fit.fit_type == "sigmoid"
     assert any("laser fit" in line for line in report)

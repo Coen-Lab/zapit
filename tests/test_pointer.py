@@ -19,11 +19,15 @@ def test_continuous_trial_then_rampdown(ready_model):
     assert r.condition == 2 and r.laser_on and r.waveforms.shape == (2500, 4)
     assert m.state == "stim" and m.daq.ao_mode() == "continuous"
     assert r.waveforms[:, 2].max() > 0
+    written = []
+    write_ao = m.daq.write_ao
+    m.daq.write_ao = lambda w: (written.append(np.array(w)), write_ao(w))
     m.stop_opto_stim()
     assert m.state == "rampdown"
     time.sleep(0.4)
     assert m.state == "idle" and m.daq.is_ao_done()
-    assert np.all(m.daq.last_waveform == 0)
+    assert np.all(written[-1] == 0)                     # the ramp's last buffer
+    assert m.daq.ao_mode() is None and np.all(m.daq.last_unclocked == 0)
     assert states[:2] == ["stim", "rampdown"]
 
 

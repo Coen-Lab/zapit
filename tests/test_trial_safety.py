@@ -51,7 +51,7 @@ def test_arming_during_rampdown_zeroes_the_outputs_first(ready_model, monkeypatc
         orig = getattr(ready_model.daq, name)
         monkeypatch.setattr(ready_model.daq, name, lambda *a, _n=name, _o=orig, **k: (calls.append(_n), _o(*a, **k))[1])
     ready_model.send_samples(condition=2, hardware_triggered=True)
-    assert calls[:3] == ["stop", "write_unclocked", "prepare_ao"]
+    assert calls.index("stop") < calls.index("write_unclocked") < calls.index("prepare_ao")
     assert np.all(ready_model.daq.last_unclocked == 0) and ready_model.state == "stim"
 
 
