@@ -68,7 +68,7 @@ While a trial is armed or playing (`stim` or `rampdown`), unclocked beam and las
 
 Arming takes tens of milliseconds, so send `send_samples` in the inter-trial interval and keep only the TTL at the time-critical moment.
 
-`send_samples` refuses (reply `ok` false, `NotReadyError`) when the scanners or sample are not calibrated, no config is loaded, a check pattern is running, or a trial is still armed or playing. A continuous stimulus must be stopped first, so it always gets its ramp-down; arming during that ramp-down is accepted and zeroes the outputs before the new trial is loaded. `load_config` is refused while a trial is armed or playing.
+`send_samples` refuses (reply `ok` false, `NotReadyError`) when the scanners or sample are not calibrated, no config is loaded, a check pattern is running, a trial is still armed or playing, or the trials log cannot be written (see below). A laser or beam left on from the GUI is set to 0 V before a trial arms. A continuous stimulus must be stopped first, so it always gets its ramp-down; arming during that ramp-down is accepted and zeroes the outputs before the new trial is loaded. `load_config` is refused while a trial is armed or playing.
 
 ## Examples
 
@@ -153,7 +153,7 @@ This is what the Bonsai example sends.
 {"ok": false, "error": "NotReadyError: Not ready: scanners and sample must be calibrated and a config loaded"}
 ```
 
-A refused `send_samples` never leaves the DAQ armed, so a TTL that follows it plays nothing. That includes a trial the log cannot record, typically because the trials CSV is open in Excel: the error names the file, and arming works again once it is closed.
+A refused `send_samples` never leaves the DAQ armed, so a TTL that follows it plays nothing. That includes a trial the log cannot record, typically because the trials CSV is open in Excel: the error names the file, and arming works again once it is closed. An experiment folder that has gone (a network share that dropped) is made again with a new parameter log, and if it cannot be, the trial is refused the same way.
 
 ### stop
 

@@ -16,13 +16,16 @@ class LaserDialog(QDialog):
     """Run and inspect the laser control-voltage to sensor-reading curve."""
 
     def __init__(self, model, parent=None, before_sweep=None):
-        """``before_sweep`` runs on the GUI thread before each sweep; the main window passes its
-        ``release_toggles``, so a check pattern or point mode is stopped and shown off first."""
+        """``before_sweep`` runs on the GUI thread before each sweep and returns an error text to refuse it,
+        or None; the main window's ``prepare_laser_sweep`` stops a check pattern or point mode first.
+        The dialog is window modal: a sweep writes the laser line for seconds, and any other control used
+        meanwhile would take the line and corrupt the fit."""
         super().__init__(parent)
         self.model = model
         self.worker: Worker | None = None
         self.before_sweep = before_sweep
         self.trial_locked = False
+        self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setWindowTitle("Laser calibration")
         self.resize(700, 500)
 
@@ -81,8 +84,10 @@ class LaserDialog(QDialog):
     def run_sweep(self):
         if self.trial_locked or (self.worker is not None and self.worker.isRunning()):
             return
-        if self.before_sweep is not None:
-            self.before_sweep()
+        refused = self.before_sweep() if self.before_sweep is not None else None
+        if refused:
+            self.info.setText(refused)
+            return
         self.run_btn.setEnabled(False)
         self.info.setText("Sweeping the laser control voltage...")
         self.worker = Worker(self.model.generate_laser_calibration_curve, parent=self)

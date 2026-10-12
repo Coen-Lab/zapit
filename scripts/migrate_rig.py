@@ -8,7 +8,8 @@ What it converts:
   * zapitSystemSettings.yml: renamed and dropped keys, the recent-configs list and the camera index (1-based
     before, 0-based now). The old TCP server section is dropped; the new server stays on, and an old remote
     client address is reported so server.bind can be opened deliberately.
-  * laserFit.mat: refitted from its stored photodiode sweep into laserFit.yml (same fitting rule).
+  * laserFit.mat: refitted from its stored photodiode sweep into laserFit.yml (same fitting rule). Converted in
+    place on its own when the settings file beside it is already current.
   * Stimulus configs that store stimModulationFreqHz per condition: moved to the top level (a .bak is kept).
 
 The app itself reads only the current formats; this script is the only place that knows the old ones.
@@ -135,18 +136,24 @@ def migrate_settings(src: Path, dst: Path, *, force: bool = False, dry_run: bool
     dst_file = dst / settings_mod.SETTINGS_FILENAME
     if not src_file.exists():
         raise FileNotFoundError(f"No {settings_mod.SETTINGS_FILENAME} in {src}")
-    if dst_file.exists() and not force and src.resolve() != dst.resolve():
-        raise FileExistsError(f"{dst_file} already exists; pass --force to replace it")
     with open(src_file, encoding="utf-8") as fh:
         raw = yaml.safe_load(fh)
+    mat = src / "laserFit.mat"
     if not settings_mod.old_layout_markers(raw):
         # Converting a current file again would count the camera index down twice and replace the 1.x backup.
-        raise ValueError(f"{src_file} is already in the current format; nothing to convert")
-    report = [f"settings: {src_file} -> {dst_file}"]
-    settings, notes = convert_settings(raw)
-    report += [f"  {n}" for n in notes]
+        # An old laser fit beside it that was never converted still is, so the app can start.
+        in_place = src.resolve() == dst.resolve()
+        if not in_place or not mat.exists() or settings_mod.laser_fit_path(dst_file).exists():
+            raise ValueError(f"{src_file} is already in the current format; nothing to convert")
+        settings = None
+        report = [f"settings: {src_file} is already in the current format; left as it is"]
+    else:
+        if dst_file.exists() and not force and src.resolve() != dst.resolve():
+            raise FileExistsError(f"{dst_file} already exists; pass --force to replace it")
+        report = [f"settings: {src_file} -> {dst_file}"]
+        settings, notes = convert_settings(raw)
+        report += [f"  {n}" for n in notes]
 
-    mat = src / "laserFit.mat"
     fit = None
     if mat.exists():
         fit = convert_laser_fit(mat)
@@ -157,11 +164,12 @@ def migrate_settings(src: Path, dst: Path, *, force: bool = False, dry_run: bool
 
     if not dry_run:
         dst.mkdir(parents=True, exist_ok=True)
-        if dst_file.exists():
-            bak = _unused(dst_file.with_suffix(".yml.bak"))
-            shutil.copyfile(dst_file, bak)
-            report.append(f"kept the replaced settings file as {bak.name}")
-        settings_mod.save_settings(settings, dst_file)
+        if settings is not None:
+            if dst_file.exists():
+                bak = _unused(dst_file.with_suffix(".yml.bak"))
+                shutil.copyfile(dst_file, bak)
+                report.append(f"kept the replaced settings file as {bak.name}")
+            settings_mod.save_settings(settings, dst_file)
         if fit is not None:
             fit.save(settings_mod.laser_fit_path(dst_file))
             if src.resolve() == dst.resolve():

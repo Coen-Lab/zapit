@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PyQt6")
 pytest.importorskip("pyqtgraph")
 
+from PyQt6.QtCore import Qt  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from zapit.gui.main_window import MainWindow  # noqa: E402
@@ -272,6 +273,25 @@ def test_laser_sweep_stops_a_check_pattern_and_waits_out_a_trial(window):
     assert not dialog.run_btn.isEnabled()
     model.stop_opto_stim()
     assert wait_until(lambda: dialog.run_btn.isEnabled(), timeout_s=5)
+    dialog.close()
+
+
+def test_laser_sweep_holds_the_window_and_waits_for_a_scanner_calibration(window):
+    model = make_ready(window)
+    window.open_laser_dialog()
+    dialog = window._laser_dialog
+    # Window modal: once Zap all could start mid-sweep and leave the GUI showing a pattern nothing played.
+    assert dialog.windowModality() == Qt.WindowModality.WindowModal
+    model.scanners_calibrated = False
+    window.scanner_panel.run_btn.setChecked(True)
+    assert window.scanner_panel.calibration_running()
+    dialog.run_sweep()
+    assert dialog.worker is None and "scanner calibration" in dialog.info.text()
+    window.scanner_panel.run_btn.setChecked(False)
+    assert wait_until(lambda: not window.scanner_panel.calibration_running(), timeout_s=10)
+    dialog.run_sweep()
+    assert dialog.worker is not None
+    assert wait_until(lambda: dialog.run_btn.isEnabled(), timeout_s=10)
     dialog.close()
 
 

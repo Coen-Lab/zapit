@@ -592,8 +592,9 @@ class Zapit:
         start_delay_s: leading delay, only with a finite duration.
         laser_power_mw: time-averaged power override; None uses the config value.
         hardware_triggered: wait for a TTL on the trigger line instead of starting now.
-        Raises NotReadyError if not calibrated / loaded, a check pattern is running, or a trial is
-        armed or playing (a continuous one must be stopped first, so it always gets its ramp-down).
+        Raises NotReadyError if not calibrated / loaded, a check pattern is running, a trial is
+        armed or playing (a continuous one must be stopped first, so it always gets its ramp-down),
+        or the trials log cannot be written. A laser or beam set on demand is zeroed before arming.
         """
         with self.lock:
             cfg = self.stim_config
@@ -640,9 +641,10 @@ class Zapit:
                 waves[:, 2] = 0
             # A trial the log cannot record is refused before the DAQ is armed: an armed trial behind an error
             # reply would still be fired by the client's next TTL, with a condition nobody recorded.
-            trials = self._trials_file() if logging and self.experiment_path and self.experiment_path.is_dir() else None
-            if self.state == "rampdown":
-                # The ramp has all but finished; zero the outputs so the new trial never arms over a held laser value.
+            trials = self._trials_file() if logging and self.experiment_path else None
+            if self.state == "rampdown" or self._last_laser_volts or self._last_xy_volts.any():
+                # The lines hold their last value until the trigger: a ramp-down's, or a laser and beam set on
+                # demand (point mode, a laser sweep). Zero them so the trial never arms over a lit laser.
                 self._stop_and_zero()
             task = ("stim_htrig" if hardware_triggered else "stim_strig") + ("_finite" if finite else "")
             self.daq.prepare_ao(waves, finite=finite, hardware_triggered=hardware_triggered, task_name=task)
@@ -662,9 +664,11 @@ class Zapit:
                 try:
                     _append_trial_row(trials, row, "armed" if hardware_triggered else "started")
                 except OSError as e:
-                    # Writable a moment ago; the trial still must not stay armed unrecorded.
+                    # Writable a moment ago; the trial still must not stay armed unrecorded. A software start
+                    # has already begun playing, so it is stopped, not disarmed.
                     self._stop_and_zero()
-                    raise NotReadyError(f"Trial not armed: the trials log {trials} cannot be written ({e})") from e
+                    raise self._unwritable("Trial not armed" if hardware_triggered else "Trial stopped as it started",
+                                           e) from e
                 self._logged_trial = (self._trial_id, trials, row)
         return TrialResult(condition, laser_on, avg_mw, bool(hardware_triggered),
                            float(stim_duration_s) if finite else -1.0, waves)
@@ -724,9 +728,16 @@ class Zapit:
     def _trials_file(self) -> Path:
         """The trials CSV for this experiment path and config, its parameter log written first, and proven
         writable. One parameter log and one trials CSV per (experiment path, config) for this session.
-        Raises NotReadyError naming the file when either cannot be written (Excel locks a CSV it has open)."""
+        Raises NotReadyError naming the file when either cannot be written (Excel locks a CSV it has open).
+        A folder that has gone (a network share that dropped) is made again, or the trial is refused."""
         try:
-            if self._log_files is None or self._log_files[0].parent != self.experiment_path:
+            self.experiment_path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise NotReadyError(f"Trial not armed: the experiment folder {self.experiment_path} is missing and "
+                                f"cannot be made again ({e.strerror or e})") from e
+        try:
+            log = self._log_files[0] if self._log_files is not None else None
+            if log is None or log.parent != self.experiment_path or not log.exists():
                 log = self.stim_config.log_parameters(self.experiment_path, {"hostname": socket.gethostname()})
                 print(f"Wrote stimulus parameter log {log}")
                 self._log_files = (log, log.with_name(log.name.replace("_log_", "_trials_")).with_suffix(".csv"))
@@ -735,9 +746,14 @@ class Zapit:
                 with open(trials, "a", encoding="utf-8"):
                     pass
         except OSError as e:
-            raise NotReadyError(f"Trial not armed: the trials log in {self.experiment_path} cannot be written "
-                                f"({e}). Close it if another program has it open") from e
+            raise self._unwritable("Trial not armed", e) from e
         return trials
+
+    def _unwritable(self, what: str, e: OSError) -> NotReadyError:
+        """The refusal for a log file that cannot be written: the file and the remedy first, the folder last."""
+        name = Path(e.filename).name if e.filename else "the trials log"
+        return NotReadyError(f"{what}: {name} cannot be written ({e.strerror or e}). Close it if another program, "
+                             f"such as Excel, has it open. Folder: {self.experiment_path}")
 
     def _log_disarmed(self):
         """A ``disarmed`` row for the current trial if it was logged: beside its armed row, wherever the
@@ -788,8 +804,9 @@ class Zapit:
             return
         unconverted = p.with_suffix(".mat")
         if unconverted.exists():
-            raise RuntimeError(f"{unconverted} is a laser fit in the old format and is not read. Convert it with "
-                               f"`uv run python scripts/migrate_rig.py`, or delete it and refit the laser")
+            raise RuntimeError(f"{unconverted} is a laser fit in the old format and is not read. Convert it in place "
+                               f"with `uv run python scripts/migrate_rig.py --from \"{p.parent}\" --to \"{p.parent}\"`, "
+                               f"or delete it and refit the laser")
         print(f"No laser fit at {p}: using a linear map between laser.laserMinMaxControlVolts and laserMinMax_mW")
 
     # ================================================================== check / demo patterns

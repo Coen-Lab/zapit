@@ -259,9 +259,17 @@ class MainWindow(QMainWindow):
 
     def open_laser_dialog(self):
         from zapit.gui.laser_dialog import LaserDialog
-        self._laser_dialog = LaserDialog(self.model, self, before_sweep=self.release_toggles)
+        self._laser_dialog = LaserDialog(self.model, self, before_sweep=self.prepare_laser_sweep)
         self._laser_dialog.set_trial_locked(self.trial_locked)
         self._laser_dialog.show()
+
+    def prepare_laser_sweep(self) -> str | None:
+        """Free the laser line for a sweep: refuse while a scanner calibration is still running or stopping
+        (it sets the laser itself), otherwise stop any pattern or point mode. Returns the refusal, or None."""
+        if self.scanner_panel.calibration_running():
+            return "The scanner calibration is still running; run the sweep once it has finished"
+        self.release_toggles()
+        return None
 
     # ------------------------------------------------------------------ toggles and patterns
     def register_toggle(self, name: str, button: QPushButton):

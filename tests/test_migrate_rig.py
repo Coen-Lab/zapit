@@ -3,10 +3,12 @@ import shutil
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 from zapit import settings as s
 from zapit.laser import LaserFit
+from zapit.pointer import Zapit
 from zapit.stim_config import StimConfig
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
@@ -52,6 +54,25 @@ def test_converting_a_converted_folder_again_is_refused(data_dir, tmp_path, caps
     assert "already in the current format" in capsys.readouterr().out
     assert yaml.safe_load((tmp_path / s.SETTINGS_FILENAME).read_text())["camera"]["connectionIndex"] == 2
     assert (tmp_path / (s.SETTINGS_FILENAME + ".bak")).read_text() == original   # the 1.x file, untouched
+
+
+def test_a_lone_old_laser_fit_beside_current_settings_is_converted(data_dir, tmp_path, capsys):
+    shutil.copytree(data_dir / "legacy_rig", tmp_path, dirs_exist_ok=True)
+    args = ["--from", str(tmp_path), "--to", str(tmp_path)]
+    assert migrate_rig.main(args) == 0
+    (tmp_path / "laserFit.yml").unlink()
+    shutil.copyfile(data_dir / "legacy_rig" / "laserFit.mat", tmp_path / "laserFit.mat")   # found later, in a backup
+    settings = (tmp_path / s.SETTINGS_FILENAME).read_text()
+    with pytest.raises(RuntimeError, match="--from") as e:   # the app names the in-place command
+        Zapit(simulated=True, settings_path=tmp_path / s.SETTINGS_FILENAME, start_camera=False)
+    assert str(tmp_path) in str(e.value)
+    capsys.readouterr()
+    assert migrate_rig.main(args) == 0                         # once refused as "already in the current format"
+    assert (tmp_path / "laserFit.yml").exists() and (tmp_path / "laserFit.mat.converted2").exists()
+    assert (tmp_path / s.SETTINGS_FILENAME).read_text() == settings
+    assert "left as it is" in capsys.readouterr().out
+    Zapit(simulated=True, settings_path=tmp_path / s.SETTINGS_FILENAME, start_camera=False).close()
+    assert migrate_rig.main(args) == 1                         # and a third run has nothing left to do
 
 
 def test_an_earlier_backup_is_never_replaced(data_dir, tmp_path):

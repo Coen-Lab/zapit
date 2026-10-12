@@ -326,6 +326,71 @@ def test_closing_with_a_trial_waiting_for_its_ttl_logs_the_disarm(model, data_di
     assert events == ["armed", "disarmed"]
 
 
+def test_refusal_names_the_locked_file_and_the_remedy_first(ready_model, tmp_path):
+    ready_model.set_experiment_path(tmp_path)
+    ready_model.send_samples(condition=1, stim_duration_s=0.05, hardware_triggered=False)
+    time.sleep(0.5)
+    trials = next(tmp_path.glob("zapit_trials_*.csv"))
+    unlock = _lock(trials)
+    try:
+        with pytest.raises(NotReadyError) as e:
+            ready_model.send_samples(condition=2, hardware_triggered=True)
+    finally:
+        unlock()
+    assert str(e.value).startswith(f"Trial not armed: {trials.name} cannot be written") and "Excel" in str(e.value)
+    assert "\\\\" not in str(e.value)                  # once the file sat inside a doubled-backslash errno text
+
+
+@pytest.mark.parametrize("hardware_triggered", [True, False])
+def test_a_row_that_fails_after_the_start_stops_the_trial(ready_model, tmp_path, monkeypatch, hardware_triggered):
+    import zapit.pointer as pointer
+    ready_model.set_experiment_path(tmp_path)
+
+    def fail(path, row, event):
+        raise PermissionError(13, "Permission denied", str(path))
+    monkeypatch.setattr(pointer, "_append_trial_row", fail)   # the CSV is created between the check and the row
+    what = "Trial not armed" if hardware_triggered else "Trial stopped as it started"
+    with pytest.raises(NotReadyError, match=what):
+        ready_model.send_samples(condition=2, stim_duration_s=1.0, hardware_triggered=hardware_triggered)
+    assert ready_model.state == "idle" and not ready_model.trial_active and ready_model.daq.laser_volts == 0
+    ready_model.daq.simulate_trigger()
+    assert not ready_model.daq.is_finite_playing()
+
+
+@pytest.mark.parametrize("set_on_demand", ["laser", "beam", "laser and beam"])
+def test_a_trial_never_arms_over_a_laser_set_on_demand(ready_model, set_on_demand):
+    if "beam" in set_on_demand:
+        ready_model.move_beam_volts([1.5, -1.0])       # point mode
+    if "laser" in set_on_demand:
+        ready_model.set_laser_mw(2.0)                  # the laser button, or a sweep's current step
+    ready_model.send_samples(condition=1, stim_duration_s=1.0, hardware_triggered=True)
+    # The lines hold their last value until the TTL: once the laser stayed lit through the wait.
+    assert ready_model.daq.laser_volts == 0 and not ready_model.daq.beam_volts.any()
+    assert ready_model.daq.is_finite_playing() and not ready_model.daq.has_started()
+
+
+def test_a_vanished_experiment_folder_is_made_again_with_its_log(ready_model, tmp_path):
+    import shutil
+    exp = tmp_path / "share" / "mouse1"
+    ready_model.set_experiment_path(exp)
+    ready_model.send_samples(condition=1, stim_duration_s=0.05, hardware_triggered=False)
+    time.sleep(0.5)
+    shutil.rmtree(tmp_path / "share")                  # the network share dropped and came back empty
+    ready_model.send_samples(condition=2, stim_duration_s=1.0, hardware_triggered=True)
+    assert [r.split(",")[1] for r in _rows(next(exp.glob("zapit_trials_*.csv")))] == ["2"]
+    assert len(list(exp.glob("zapit_log_*.yml"))) == 1   # the trials beside it are described again
+
+
+def test_an_experiment_folder_that_cannot_be_made_refuses_the_trial(ready_model, tmp_path):
+    exp = tmp_path / "mouse1"
+    ready_model.set_experiment_path(exp)
+    exp.rmdir()
+    exp.write_text("a file where the folder was")      # stands in for a share that is still gone
+    with pytest.raises(NotReadyError, match="experiment folder .* cannot be made again"):
+        ready_model.send_samples(condition=2, hardware_triggered=True)
+    assert ready_model.state == "idle" and not ready_model.trial_active
+
+
 def test_on_demand_write_ends_a_check_pattern(ready_model):
     ready_model.zap_all_coords()
     ready_model.set_laser_mw(0.5)                      # what a laser sweep does: the write takes the AO lines

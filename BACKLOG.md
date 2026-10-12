@@ -33,8 +33,19 @@
 
 ## Audit 2026-10-12 (fourth, on 4b19317): not recommended (steelman holds)
 
-- Trials are not logged, silently, if the experiment folder disappears after it was set: 1.x behaviour, and Bonsai's reply log still holds every condition.
 - Pylon keeps the previous ROI's last frame until the next grab, where the simulated camera clears it: one frame (40 ms), and the next user action comes seconds later.
 - A `stop` that ramps down a check pattern counts the ramp's buffers at the stimulus sample rate, not the pattern's: only the number of ramp buffers changes, and the outputs still end at 0 V.
 - A config loaded from the GUI is not under the model lock while a server trial arms: a millisecond window, and loading is refused under an armed trial.
 - `tests/data/legacy_rig/laserFit.mat` and the word MATLAB in `scripts/migrate_rig.py`: the converter's test needs a real 1.x file; nothing runs MATLAB.
+
+## Audit 2026-10-12 (fifth, on 812292a): not recommended (steelman holds)
+
+- A DAQ refusal after the pre-arm log check leaves a parameter log with no trials CSV: it records only the config, and the next trial in that folder reuses it.
+- Bonsai's `WithLatestFrom` sends a TTL at the next onset after a refused arm, on the last good reply: it reaches an idle DAQ, and the refusal is in Bonsai's reply log.
+- `_pattern_running` stays set if `write_unclocked` raises: only on a hardware fault, and Stop pattern clears it.
+- The laser sweep cancels a sample calibration in progress: right before the laser is driven over the sample.
+- A hand-trimmed 1.x settings file with none of the `old_layout_markers` keys: 1.x fills in missing keys, and `general.openPythonBridgeOnStartup` is in its defaults from their first commit (f9e6572).
+- Backups numbered `.bak2` rather than `.2.bak`: cosmetic.
+- Timing thresholds in the freeze and sweep tests: twice the margin of the effect they detect.
+- Quitting during a laser sweep: `run_gui` closes the model only once the sweep has returned; probed, no laser write after shutdown.
+- Setting the same experiment path again starts a new log pair: one pair per `set_experiment_path`, by design.
