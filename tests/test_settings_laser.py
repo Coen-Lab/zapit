@@ -45,6 +45,29 @@ def test_unedited_default_detection():
     assert not s.is_unedited_default(d)
 
 
+def test_gui_tweaks_do_not_unlock_placeholder_settings():
+    d = s.default_settings()
+    d["camera"]["default_exposure"] = 450.0                    # the exposure spinbox
+    d["calibrateScanners"]["pointSpacingInMM"] = 1.5           # a calibration parameter
+    d["calibrateSample"]["refAP"] = 4.0
+    d["server"]["bind"] = "tcp://*:5555"                       # also a file written by an older build
+    assert s.is_unedited_default(d)
+    d["laser"]["laserMinMax_mW"] = [0.05, 57.0]
+    assert not s.is_unedited_default(d)                        # one real rig value is enough
+
+
+def test_old_settings_file_is_refused_naming_the_script(data_dir, tmp_path):
+    p = tmp_path / s.SETTINGS_FILENAME
+    p.write_bytes((data_dir / "legacy_rig" / s.SETTINGS_FILENAME).read_bytes())
+    try:
+        s.load_settings(p, write_back=True)
+    except s.OldSettingsError as e:
+        assert "migrate_rig.py" in str(e) and "tcpServer" in str(e)
+    else:
+        raise AssertionError("expected OldSettingsError")
+    assert p.read_bytes() == (data_dir / "legacy_rig" / s.SETTINGS_FILENAME).read_bytes()   # left untouched
+
+
 def test_load_writes_back_and_backs_up(tmp_path):
     p = tmp_path / "zapitSystemSettings.yml"
     p.write_text(yaml.safe_dump({"NI": {"device_ID": "Dev9"}}))

@@ -64,6 +64,7 @@ def test_trial_logging(ready_model, tmp_path):
     m = ready_model
     m.set_experiment_path(tmp_path)
     m.send_samples(condition=4, hardware_triggered=False, laser_power_mw=1.5)
+    m.stop_opto_stim(0)                     # a continuous trial is stopped before the next is armed
     m.send_samples(condition=5, hardware_triggered=False)
     logs = list(tmp_path.glob("zapit_log_*.yml"))
     trials = list(tmp_path.glob("zapit_trials_*.csv"))

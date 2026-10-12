@@ -54,13 +54,13 @@ r.condition, r.laser_on, r.laser_power_mw, r.waveforms
 z.state                       # 'idle', 'stim', 'rampdown'; 'idle' again once a finite trial has played
 z.trial_active                # True while a trial is armed, playing or ramping down
 z.stop_opto_stim()            # ramp down a continuous stimulus (config ramp-down, or pass ms);
-                              # disarms a finite trial that was never triggered
-z.set_experiment_path("D:/data/mouse1/session3")      # enables logging
+                              # disarms a trial (finite or continuous) that was never triggered
+z.set_experiment_path("D:/data/mouse1/session3")      # enables logging; creates the folder if needed
 ```
 
-`send_samples` raises `NotReadyError` when a calibration or config is missing, a finite trial is armed or playing, a check pattern is running, or (on hardware) the settings file still holds the shipped defaults; `ValueError` for a bad condition number. While `trial_active`, beam moves, laser writes, check patterns and scanner calibration raise `NotReadyError`. After a ramp-down the laser and scanners are set to 0 V.
+`send_samples` raises `NotReadyError` when a calibration or config is missing, a trial is armed or playing (stop a continuous one first; arming during its ramp-down zeroes the outputs, then arms), a check pattern is running, or (on hardware) the settings file still holds the placeholder `laser.laserMinMax_mW`, `scanners.voltsPerPixel` and `camera.micronsPerPixel`; `ValueError` for a bad condition number. While `trial_active`, beam moves, laser writes, check patterns, scanner calibration and `load_stim_config` raise `NotReadyError`. After a ramp-down the laser and scanners are set to 0 V.
 
-Logging writes one `zapit_log_<time>.yml` (the config, its absolute path, version, hostname) and one `zapit_trials_<time>.csv` per experiment folder and config; loading another config starts a new pair. A trial is logged only once the DAQ has accepted it, with a millisecond timestamp of when it was armed.
+Logging writes one `zapit_log_<time>.yml` (the config, its absolute path, version, hostname) and one `zapit_trials_<time>.csv` per experiment folder and config; loading another config starts a new pair. A trial is logged only once the DAQ has accepted it, with a millisecond timestamp of when it was armed. The trials CSV columns are `timestamp, stim_index, laser_power` (time-averaged mW requested), `hardware_triggered, stim_duration` (-1 continuous), `laser_on, power_capped` (1 when the laser maximum limited the delivered power) and `event`: `armed` (waiting for the TTL), `started` (software start) or `disarmed` (a row added when `stop` cancelled that trial before its TTL, so it never played).
 
 ## Callbacks
 
@@ -91,4 +91,4 @@ The wire protocol is in `docs/bonsai.md`.
 
 ## Shutdown
 
-`z.close()` ramps down, zeroes the laser and scanners, and releases the camera and DAQ.
+`z.close()` stops any task without a ramp, sets the laser and scanners to 0 V, and releases the camera and DAQ.

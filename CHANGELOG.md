@@ -33,20 +33,26 @@ Python rewrite by the Coen Lab (UCL).
     1.x rig once: settings (renamed keys, recent-configs list, camera index now 0-based), the
     laser fit (`laserFit.mat` refitted into `laserFit.yml`) and stimulus configs that store the
     modulation frequency per condition. Settings are found in `ZAPIT_SETTINGS` or
-    `%USERPROFILE%\ZapitSettings` only.
-  * A rig refuses to stimulate while its settings file still equals the shipped defaults.
+    `%USERPROFILE%\ZapitSettings` only; a 1.x settings file found there is refused, naming the
+    script. The old TCP server switch is not carried over (the new server stays on).
+  * A rig refuses to stimulate while `laser.laserMinMax_mW`, `scanners.voltsPerPixel` and
+    `camera.micronsPerPixel` all still hold their shipped placeholder values.
   * New ZeroMQ REQ/REP JSON server (`zapit/server.py`) and Python client, bound to
     `tcp://127.0.0.1:5555` by default and started only when `server.enable` is true. The example
     Bonsai workflow arms trials in the inter-trial interval and fires only the TTL at onset.
   * Trial safety: on-demand beam and laser writes and check patterns are refused while a trial is
-    armed or playing; `stop` disarms a finite trial that was never triggered; a late ramp-down stop
+    armed or playing; `stop` disarms any trial that was never triggered; a new trial or config is
+    refused while a trial is armed or playing, and arming during a ramp-down zeroes the outputs
+    first; a late ramp-down stop
     can no longer kill the next trial; laser and scanners are set to 0 V after a stop; the ephys
     waveform is capped at the laser's maximum control voltage; a scanner calibration with a mean
     residual above 100 um is rejected.
+  * Camera flips (`flipImageLR`/`UD`) are honoured when drawing an ROI and in the sample-mm frame.
   * New PyQt6 GUI: live camera with mm axes, scanner and sample calibration, check patterns,
     laser calibration dialog, and the atlas stimulus config editor.
-  * Trial logs are `.csv` files with an added `laser_on` column and millisecond timestamps,
-    written only once the DAQ accepts the trial. Each config gets its own parameter log and trials
+  * Trial logs are `.csv` files with added `laser_on`, `power_capped` and `event` (`armed`,
+    `started`, `disarmed`) columns and millisecond timestamps, written only once the DAQ accepts
+    the trial; the experiment folder is created if needed. Each config gets its own parameter log and trials
     file; the parameter log records the config's absolute path.
   * CLI: `zapit gui`, `zapit server`, `zapit pattern`, `zapit check-config`.
 

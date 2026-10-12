@@ -5,8 +5,9 @@
     uv run python scripts/migrate_rig.py --configs D:/stim_configs   # rewrite old-layout stimulus configs in place
 
 What it converts:
-  * zapitSystemSettings.yml: renamed and dropped keys, the recent-configs list, the camera index (1-based
-    before, 0-based now) and the old TCP server switch (enable: false keeps the new server off).
+  * zapitSystemSettings.yml: renamed and dropped keys, the recent-configs list and the camera index (1-based
+    before, 0-based now). The old TCP server section is dropped; the new server stays on, and an old remote
+    client address is reported so server.bind can be opened deliberately.
   * laserFit.mat: refitted from its stored photodiode sweep into laserFit.yml (same fitting rule).
   * Stimulus configs that store stimModulationFreqHz per condition: moved to the top level (a .bak is kept).
 
@@ -42,8 +43,9 @@ def _documents_folder() -> Path:
 
 
 def old_settings_dirs() -> list[Path]:
-    """Where 1.x kept its settings, in the order it searched them."""
-    dirs = [_documents_folder() / "ZapitSettings"]
+    """Where 1.x kept its settings, in the order it searched them. The last is the "settings with the
+    code" option of a Git install, which is this checkout when it was updated in place."""
+    dirs = [_documents_folder() / "ZapitSettings", Path(__file__).resolve().parents[1] / "SETTINGS"]
     if os.name == "nt":
         dirs.insert(0, Path("C:/ZapitSettings"))
     return dirs
@@ -64,10 +66,15 @@ def convert_settings(raw: dict) -> tuple[dict, list[str]]:
         cam["connectionIndex"] = max(int(cam["connectionIndex"]) - 1, 0)
         notes.append(f"camera.connectionIndex now counts from 0: {cam['connectionIndex']}")
 
+    # The old TCP server was an optional extra, off by default; the new server is how Bonsai runs trials,
+    # so its switch is not carried over. A remote client address is reported, never opened up silently.
     tcp = raw.pop("tcpServer", None)
-    if isinstance(tcp, dict) and tcp.get("enable") in (False, 0, 0.0):
-        raw["server"] = {"enable": False}
-        notes.append("tcpServer.enable was false: server.enable set to false")
+    if isinstance(tcp, dict):
+        notes.append("tcpServer dropped: the ZeroMQ server (server.enable, on) replaces it")
+        ip = str(tcp.get("IP", "localhost")).strip()
+        if tcp.get("enable") in (True, 1, 1.0) and ip not in ("localhost", "127.0.0.1", ""):
+            notes.append(f"tcpServer took commands at {ip}: to drive Zapit from another machine, set "
+                         f"server.bind to tcp://*:5555 (it accepts this machine only by default)")
 
     cache = raw.get("cache")
     if isinstance(cache, dict):
@@ -95,12 +102,20 @@ def convert_settings(raw: dict) -> tuple[dict, list[str]]:
 def convert_laser_fit(mat_path: Path) -> LaserFit:
     """Refit the photodiode sweep stored in an old laserFit.mat."""
     from scipy.io import loadmat
-    m = loadmat(mat_path, squeeze_me=True, struct_as_record=False)
+    try:
+        m = loadmat(mat_path, squeeze_me=True, struct_as_record=False)
+    except (NotImplementedError, OSError, ValueError, TypeError) as e:
+        raise ValueError(f"{mat_path} could not be read ({type(e).__name__}: {e}). Leave it out and "
+                         f"recalibrate the laser in Zapit (File, Laser calibration) instead") from e
     if "laserFit" not in m:
         raise ValueError(f"{mat_path} holds no laserFit variable")
     lf = m["laserFit"]
-    x = np.asarray(lf.controlValues, dtype=float).ravel()
-    y = np.asarray(lf.sensorValues, dtype=float).ravel()
+    try:
+        x = np.asarray(lf.controlValues, dtype=float).ravel()
+        y = np.asarray(lf.sensorValues, dtype=float).ravel()
+    except (AttributeError, TypeError, ValueError) as e:
+        raise ValueError(f"{mat_path} holds no readable photodiode sweep ({e}); recalibrate the laser in Zapit "
+                         f"instead") from e
     return LaserFit.fit(x, y)
 
 

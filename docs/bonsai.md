@@ -55,7 +55,7 @@ The reply reports what was actually chosen, which matters when `condition` or `l
 |------------|---------------------------------------------------------------------|
 | `idle`     | Nothing armed or playing, including once a finite trial has finished playing |
 | `stim`     | A trial is loaded, either armed for a trigger or playing             |
-| `rampdown` | `stop` was called on a continuous stimulus and the laser is ramping down (about 200 ms after the ramp it returns to `idle`) |
+| `rampdown` | `stop` was called on a continuous stimulus and the laser is ramping down; it returns to `idle` about 200 ms after the last ramp step has been written |
 
 While a trial is armed or playing (`stim` or `rampdown`), unclocked beam and laser writes are refused, so pointing the beam from the GUI cannot disturb a trial.
 
@@ -68,7 +68,7 @@ While a trial is armed or playing (`stim` or `rampdown`), unclocked beam and las
 
 Arming takes tens of milliseconds, so send `send_samples` in the inter-trial interval and keep only the TTL at the time-critical moment.
 
-`send_samples` refuses (reply `ok` false, `NotReadyError`) when the scanners or sample are not calibrated, no config is loaded, or a finite trial is still playing.
+`send_samples` refuses (reply `ok` false, `NotReadyError`) when the scanners or sample are not calibrated, no config is loaded, a check pattern is running, or a trial is still armed or playing. A continuous stimulus must be stopped first, so it always gets its ramp-down; arming during that ramp-down is accepted and zeroes the outputs before the new trial is loaded. `load_config` is refused while a trial is armed or playing.
 
 ## Examples
 
@@ -89,7 +89,7 @@ Requests and replies as sent on the wire, one JSON object per message.
 {"cmd": "status"}
 ```
 ```json
-{"state": "idle", "ready": true, "scanners_calibrated": true, "sample_calibrated": true, "config": "uniAndBilateral_5_conditions", "n_conditions": 5, "experiment_path": "D:\\data\\sub-001\\ses-03", "simulated": false, "ok": true}
+{"state": "idle", "ready": true, "scanners_calibrated": true, "sample_calibrated": true, "config": "uniAndBilateral_5_conditions.yml", "n_conditions": 5, "experiment_path": "D:\\data\\sub-001\\ses-03", "simulated": false, "ok": true}
 ```
 
 `ready` is true when both calibrations are done and a config is loaded. `config` and `experiment_path` are null when not set.
@@ -168,7 +168,7 @@ With an explicit ramp:
 {"cmd": "stop", "rampdown_ms": 100}
 ```
 
-`stop` on an idle system or on a finished finite trial replies `{"state": "idle", "ok": true}`. `stop` on a finite trial that is armed but has not been triggered cancels it: the DAQ is disarmed, nothing plays, and the reply is `{"state": "idle", "ok": true}`. `rampdown_ms` omitted or null uses the ramp from the last condition's config.
+`stop` on an idle system or on a finished finite trial replies `{"state": "idle", "ok": true}`. `stop` on a trial that is armed but has not been triggered, finite or continuous, cancels it: the DAQ is disarmed, nothing plays, the outputs go to 0 V, a `disarmed` row is added to the trials log, and the reply is `{"state": "idle", "ok": true}`. `rampdown_ms` omitted or null uses the ramp from the last condition's config.
 
 ### load_config
 
@@ -176,7 +176,7 @@ With an explicit ramp:
 {"cmd": "load_config", "path": "C:\\zapit\\configs\\uniAndBilateral_5_conditions.yml"}
 ```
 ```json
-{"config": "uniAndBilateral_5_conditions", "n_conditions": 5, "ok": true}
+{"config": "uniAndBilateral_5_conditions.yml", "n_conditions": 5, "ok": true}
 ```
 
 ### set_experiment_path
@@ -188,7 +188,7 @@ With an explicit ramp:
 {"experiment_path": "D:\\data\\sub-001\\ses-03", "ok": true}
 ```
 
-`{"cmd": "set_experiment_path", "path": null}` clears it and replies with `experiment_path` null. Trial logging only happens when the path is set and the directory exists.
+`{"cmd": "set_experiment_path", "path": null}` clears it and replies with `experiment_path` null. The folder is created if it does not exist; if it cannot be created the reply is an error and the path is unchanged.
 
 ### simulate_trigger
 

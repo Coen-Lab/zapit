@@ -111,18 +111,44 @@ _SCHEMA: dict[str, dict[str, tuple[Any, Any]]] = {
     },
 }
 
-# Sections a user never edits by hand; ignored when deciding whether a file is still the default.
-_RUNTIME_SECTIONS = ("cache",)
+# The shipped values of these are placeholders, not a rig: laser power range and the two image scales.
+# GUI controls never write them, so tweaking exposure or calibration parameters cannot unlock a rig.
+RIG_KEYS = (("laser", "laserMinMax_mW"), ("scanners", "voltsPerPixel"), ("camera", "micronsPerPixel"))
+
+
+class OldSettingsError(RuntimeError):
+    """A Zapit 1.x settings file, which only scripts/migrate_rig.py converts."""
 
 
 def default_settings() -> dict[str, dict[str, Any]]:
     return {sec: {k: copy.deepcopy(v[0]) for k, v in leaves.items()} for sec, leaves in _SCHEMA.items()}
 
 
+def rig_keys_text() -> str:
+    return ", ".join(f"{sec}.{key}" for sec, key in RIG_KEYS)
+
+
 def is_unedited_default(settings: dict[str, Any]) -> bool:
-    """True when every rig-specific value still equals the shipped default."""
+    """True while every rig key (``RIG_KEYS``) still holds its shipped placeholder value."""
     d = default_settings()
-    return all(settings.get(sec) == d[sec] for sec in d if sec not in _RUNTIME_SECTIONS)
+    return all(settings.get(sec, {}).get(key) == d[sec][key] for sec, key in RIG_KEYS)
+
+
+def old_layout_markers(raw: Any) -> list[str]:
+    """Keys that only a Zapit 1.x settings file has; empty for a current file."""
+    if not isinstance(raw, dict):
+        return []
+    found = []
+    if "tcpServer" in raw:
+        found.append("tcpServer")
+    for sec, key in (("experiment", "defaultLaserFrequencyHz"), ("NI", "wrapper"),
+                     ("general", "openPythonBridgeOnStartup")):
+        if isinstance(raw.get(sec), dict) and key in raw[sec]:
+            found.append(f"{sec}.{key}")
+    recent = raw.get("cache", {}).get("previouslyLoadedFiles") if isinstance(raw.get("cache"), dict) else None
+    if isinstance(recent, list) and any(isinstance(r, list) for r in recent):
+        found.append("cache.previouslyLoadedFiles as [path, time] pairs")
+    return found
 
 
 def validate(settings: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -204,6 +230,12 @@ def load_settings(path: str | os.PathLike | None = None, *, write_back: bool | N
         write_back = not explicit
     with open(path, encoding="utf-8") as fh:
         raw = yaml.safe_load(fh) or {}
+    old = old_layout_markers(raw)
+    if old:
+        # The generic correction would silently keep a 1-based camera index and reset renamed keys.
+        raise OldSettingsError(f"{path} is a Zapit 1.x settings file ({', '.join(old)}) and is not read. Convert "
+                               f"it in place with `uv run python scripts/migrate_rig.py --from \"{path.parent}\" "
+                               f"--to \"{path.parent}\"`, then restart")
     settings, valid = validate(raw)
     if not valid:
         print(f"Settings file {path} had missing, unknown or invalid entries; using corrected values")

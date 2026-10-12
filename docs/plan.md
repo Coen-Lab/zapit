@@ -15,7 +15,7 @@ This records the design decisions, what is still unverified on hardware, and the
 | Package management | uv, pyproject, optional extras `gui`, `ni`, `basler` | Core imports without hardware SDKs; tests run anywhere. |
 | Coordinates | "Sample mm" is always relative to the full-sensor centre; ROI offsets are applied at the pixel boundary | One frame for every calculation removes a class of bugs when the ROI changes. |
 | Server exposure | Binds `tcp://127.0.0.1:5555` unless `server.bind` says otherwise | A laser should not be controllable from the whole network by default. |
-| Unedited settings | A rig whose settings file still equals the shipped defaults refuses to stimulate | Default laser and scanner scales are placeholders, not a rig. |
+| Unedited settings | A rig refuses to stimulate while `laser.laserMinMax_mW`, `scanners.voltsPerPixel` and `camera.micronsPerPixel` all hold their shipped values | Those defaults are placeholders, not a rig. The GUI never writes them, so tweaking exposure cannot unlock a rig, and a rig that genuinely shares one default value is not locked out. |
 
 ## Architecture
 
@@ -34,11 +34,13 @@ The model is free of Qt. It emits plain callbacks (`zapit.events.Signal`) which 
 ## Trial safety rules
 
 - While a trial is armed, playing or ramping down, the model refuses on-demand beam and laser writes and check patterns: an on-demand write takes the AO lines from the clocked task and would silently drop the trial. The GUI greys out those controls.
-- `stop` disarms a finite trial whose trigger never came, so a missed TTL cannot lock out the session. A finite trial that is playing finishes by itself.
+- `stop` disarms any trial whose trigger never came, finite or continuous, so a missed TTL cannot lock out the session (a ramp-down written into a task waiting for its trigger would block on NI). A finite trial that is playing finishes by itself.
+- A new trial is refused while another is armed or playing; a continuous one must be stopped first, so it always gets its ramp-down. Arming during a ramp-down stops the task and zeroes the outputs first, because a stopped task holds its last sample and the laser would otherwise stay at that value until the next TTL. A config cannot be loaded under a trial.
 - After a continuous stimulus ramps down, the task is stopped and the laser and scanners are set to 0 V with an on-demand write, because a stopped AO task holds its last sample. The delayed stop is tied to its trial, so it never stops a trial armed during the ramp-down.
 - The laser waveform is never allowed above `laser.laserMinMaxControlVolts[1]`; the ephys half-sine is scaled down if needed.
 - A scanner calibration whose mean residual exceeds 100 um is rejected (usually a mirrored view needing an invert flag).
-- Trials are logged only after the DAQ accepts them, one parameter log and trials file per experiment folder and config.
+- Trials are logged only after the DAQ accepts them, one parameter log and trials file per experiment folder and config. A trial disarmed before its TTL gets a `disarmed` row, and a trial whose power the laser maximum limited is flagged `power_capped`.
+- The model state is read and written under the model lock, so a GUI poll cannot report a newly armed trial as idle and unlock the beam controls over it.
 
 ## Not verified on hardware
 

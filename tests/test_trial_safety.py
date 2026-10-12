@@ -24,6 +24,59 @@ def test_stop_disarms_finite_trial_whose_ttl_never_came(ready_model):
     ready_model.send_samples(condition=2, stim_duration_s=1.0, hardware_triggered=True)   # not refused
 
 
+def test_stop_disarms_continuous_trial_whose_ttl_never_came(ready_model, monkeypatch):
+    ready_model.send_samples(condition=1, hardware_triggered=True)            # the defaults: continuous, triggered
+
+    def never_into_an_unstarted_task(w):
+        raise AssertionError("ramp written into a task waiting for its trigger (blocks on NI)")
+    monkeypatch.setattr(ready_model.daq, "write_ao", never_into_an_unstarted_task)
+    ready_model.stop_opto_stim()
+    assert ready_model.state == "idle" and np.all(ready_model.daq.last_unclocked == 0)
+    ready_model.send_samples(condition=2, hardware_triggered=True)            # not refused
+
+
+def test_new_trial_refused_over_a_playing_continuous_one(ready_model):
+    ready_model.send_samples(condition=1, hardware_triggered=False)
+    with pytest.raises(NotReadyError, match="continuous"):
+        ready_model.send_samples(condition=2, hardware_triggered=True)
+    assert ready_model.last_condition == 1
+
+
+def test_arming_during_rampdown_zeroes_the_outputs_first(ready_model, monkeypatch):
+    ready_model.send_samples(condition=1, hardware_triggered=False)
+    ready_model.stop_opto_stim()
+    assert ready_model.state == "rampdown"
+    calls = []
+    for name in ("stop", "write_unclocked", "prepare_ao"):
+        orig = getattr(ready_model.daq, name)
+        monkeypatch.setattr(ready_model.daq, name, lambda *a, _n=name, _o=orig, **k: (calls.append(_n), _o(*a, **k))[1])
+    ready_model.send_samples(condition=2, hardware_triggered=True)
+    assert calls[:3] == ["stop", "write_unclocked", "prepare_ao"]
+    assert np.all(ready_model.daq.last_unclocked == 0) and ready_model.state == "stim"
+
+
+def test_state_poll_never_overwrites_a_newly_armed_trial(ready_model):
+    ready_model.send_samples(condition=1, stim_duration_s=0.02, hardware_triggered=False)
+    time.sleep(0.6)                                    # finished, but nobody has read the state yet
+    orig = ready_model.daq.is_ao_done
+    in_poll = threading.Event()
+
+    def slow_done():
+        v = orig()
+        if threading.current_thread().name == "poll":
+            in_poll.set()
+            time.sleep(0.05)                           # the poll is pre-empted between its check and its write
+        return v
+    ready_model.daq.is_ao_done = slow_done
+    poll = threading.Thread(target=lambda: ready_model.state, name="poll")
+    poll.start()
+    in_poll.wait(2)
+    ready_model.daq.is_ao_done = orig
+    ready_model.send_samples(condition=2, hardware_triggered=True)
+    poll.join()
+    assert ready_model.state == "stim" and ready_model.trial_active
+
+
 def test_stop_leaves_a_playing_finite_trial_alone(ready_model):
     _armed_finite(ready_model)
     ready_model.daq.simulate_trigger()
@@ -80,10 +133,17 @@ def test_trial_refused_while_a_check_pattern_runs(ready_model):
 
 def test_unedited_rig_settings_block_stimulation(ready_model):
     ready_model.settings_unedited = True
-    with pytest.raises(NotReadyError, match="shipped defaults"):
+    with pytest.raises(NotReadyError, match="placeholder"):
         ready_model.send_samples(condition=1)
-    with pytest.raises(NotReadyError, match="shipped defaults"):
+    with pytest.raises(NotReadyError, match="laser.laserMinMax_mW"):
         ready_model.zap_all_coords()
+
+
+def test_config_load_refused_during_a_trial(ready_model, data_dir):
+    ready_model.send_samples(condition=4, hardware_triggered=True)
+    with pytest.raises(NotReadyError, match="config"):
+        ready_model.load_stim_config(data_dir / "left_right_pair.yml")
+    assert ready_model.stim_config.name == "uniAndBilateral_5_conditions.yml" and ready_model.last_condition == 4
 
 
 # ------------------------------------------------------------------ laser output
@@ -111,6 +171,7 @@ def test_new_config_starts_a_new_log_pair(ready_model, data_dir, tmp_path):
     ready_model.set_experiment_path(tmp_path)
     ready_model.send_samples(condition=1, hardware_triggered=False)
     ready_model.stop_opto_stim(0)
+    time.sleep(0.4)                                    # configs are not swapped under a trial's ramp-down
     ready_model.load_stim_config(data_dir / "left_right_pair.yml")
     ready_model.send_samples(condition=1, hardware_triggered=False)
     logs = sorted(tmp_path.glob("zapit_log_*.yml"))
@@ -138,6 +199,33 @@ def test_trial_timestamps_have_milliseconds(ready_model, tmp_path):
     ready_model.send_samples(condition=1, hardware_triggered=False)
     row = _rows(next(tmp_path.glob("zapit_trials_*.csv")))[0]
     assert len(row.split(",")[0].split(".")[-1]) == 3
+
+
+def test_missing_experiment_folder_is_created_and_logged(ready_model, tmp_path):
+    session = tmp_path / "sub-001" / "ses-01"
+    ready_model.set_experiment_path(session)
+    ready_model.send_samples(condition=1, hardware_triggered=False)
+    assert len(_rows(next(session.glob("zapit_trials_*.csv")))) == 1
+
+
+def test_disarmed_trial_is_marked_in_the_log(ready_model, tmp_path):
+    ready_model.set_experiment_path(tmp_path)
+    ready_model.send_samples(condition=3, stim_duration_s=1.0, hardware_triggered=True)
+    ready_model.stop_opto_stim()                       # the TTL never came
+    ready_model.send_samples(condition=2, hardware_triggered=False)
+    text = next(tmp_path.glob("zapit_trials_*.csv")).read_text().splitlines()
+    assert text[0].endswith("power_capped,event")
+    events = [(r.split(",")[1], r.split(",")[-1]) for r in text[1:]]
+    assert events == [("3", "armed"), ("3", "disarmed"), ("2", "started")]
+
+
+def test_capped_power_is_flagged_in_the_log(ready_model, tmp_path):
+    ready_model.set_experiment_path(tmp_path)
+    for c in ready_model.stim_config.conditions:
+        c.ephys = True
+    ready_model.send_samples(condition=1, hardware_triggered=False, laser_power_mw=ready_model.laser.max_mw / 2)
+    row = _rows(next(tmp_path.glob("zapit_trials_*.csv")))[0].split(",")
+    assert row[-2] == "1"
 
 
 # ------------------------------------------------------------------ config loading
@@ -169,6 +257,31 @@ def test_mirrored_view_calibration_is_rejected(data_dir, tmp_path):
         assert not m.scanners_calibrated
         m.mapping.invert_x = True          # the documented correction
         assert m.calibrate_scanners(settle_s=0)
+    finally:
+        m.close()
+
+
+@pytest.mark.parametrize("flip", [False, True])
+def test_roi_drawn_around_the_beam_keeps_it_in_view(data_dir, tmp_path, flip):
+    s = yaml.safe_load((data_dir / "settings_test.yml").read_text())
+    s["cache"]["ROI"] = None
+    s["camera"]["flipImageLR"] = s["camera"]["flipImageUD"] = flip
+    p = tmp_path / "s.yml"
+    p.write_text(yaml.safe_dump(s))
+    m = Zapit(simulated=True, settings_path=p)
+    try:
+        m.set_laser_mw(2.0)
+        m.move_beam_volts([-0.5, 0.3])
+
+        def spot_mm():
+            f = m.average_frames(1)
+            assert f.max() > 200, "beam spot not in view"
+            r, c = np.unravel_index(np.argmax(f), f.shape)
+            return m.pixels_to_mm([c, r])[0]
+        before = spot_mm()
+        m.set_cam_roi(m.roi_from_mm(before[0] - 2, before[1] - 2, 4.0, 4.0))
+        after = spot_mm()                              # same physical spot, same sample mm, whatever the ROI
+        assert np.allclose(after, before, atol=2 * m.mapping.mm_per_pixel)
     finally:
         m.close()
 

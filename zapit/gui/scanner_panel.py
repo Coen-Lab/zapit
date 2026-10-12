@@ -222,11 +222,7 @@ class ScannerPanel(QWidget):
     def apply_roi(self):
         if not self.view.roi_visible():
             return
-        x, y, w, h = self.view.roi_rect_mm()
-        px0 = self.model.mm_to_pixels([x, y])[0]
-        mmpp = self.model.mapping.mm_per_pixel
-        cx, cy, _, _ = self.model.cam.roi
-        roi = (cx + px0[0], cy + px0[1], w / mmpp, h / mmpp)
+        roi = self.model.roi_from_mm(*self.view.roi_rect_mm())
         self.view.hide_roi()
         self.apply_roi_btn.setEnabled(False)
         self.view.clear_all()

@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWind
                              QPushButton, QTabWidget, QVBoxLayout, QWidget)
 
 from zapit import __version__
+from zapit import settings as settings_mod
 from zapit.gui.bridge import ModelBridge
 from zapit.gui.camera_view import CameraView
 from zapit.gui.sample_panel import SamplePanel
@@ -152,8 +153,9 @@ class MainWindow(QMainWindow):
         self.settings_warning.setStyleSheet(WARNING_STYLE)
         self.settings_warning.setWordWrap(True)
         if getattr(self.model, "settings_unedited", False):
-            self.settings_warning.setText(f"Settings file {self.model.settings_path} still holds the shipped "
-                                          f"defaults: stimulation is refused until it is edited for this rig")
+            self.settings_warning.setText(f"Settings file {self.model.settings_path} still holds the placeholder "
+                                          f"{settings_mod.rig_keys_text()}: stimulation is refused until they are "
+                                          f"set for this rig")
         self.settings_warning.setVisible(bool(self.settings_warning.text()))
         layout.addWidget(self.scanners_lamp)
         layout.addWidget(self.sample_lamp)
@@ -225,6 +227,9 @@ class MainWindow(QMainWindow):
         try:
             cfg = self.model.load_stim_config(path)
             over = cfg.conditions_exceeding_power(self.model.laser.max_mw, self.model.blanking.blanking_time_ms)
+        except NotReadyError as e:
+            self.not_ready("Config not loaded", e)
+            return False
         except (StimConfigError, OSError) as e:
             self.notify("Config not loaded", f"{path.name} was not loaded:\n{e}", "critical")
             return False

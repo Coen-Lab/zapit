@@ -31,7 +31,7 @@ GUI tests run offscreen: set `QT_QPA_PLATFORM=offscreen`.
 
 ## Conventions
 
-- "Sample mm" is relative to the full-sensor centre everywhere in the model; ROI offsets are applied only in `Zapit.pixels_to_mm` and `mm_to_pixels`.
+- "Sample mm" is relative to the full-sensor centre everywhere in the model, in the displayed (flipped) image's orientation; ROI offsets are applied only in `Zapit.roi_offset_mm` (mirrored on a flipped axis), `pixels_to_mm` and `mm_to_pixels`. Convert an mm rectangle to a sensor ROI with `Zapit.roi_from_mm`.
 - Waveform columns are fixed: 0 galvo X, 1 galvo Y, 2 laser, 3 LED. Condition indices are 1-based at the API and wire level, 0-based inside.
 - Add a settings key by extending `_SCHEMA` in `zapit/settings.py` with a default and a validator, then document it in `docs/settings.md`.
 - The app reads only current file formats. Conversions from older formats go in `scripts/migrate_rig.py`, never in the app.

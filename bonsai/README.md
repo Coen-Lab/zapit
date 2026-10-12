@@ -53,7 +53,7 @@ Then open the workflow by starting `.bonsai/Bonsai.exe` and choosing File, Open,
 2. Start the workflow (the green play button).
 3. Press **Space** (the stand-in for the inter-trial interval). The workflow sends `send_samples` with a random condition and random laser state and logs the reply. A successful reply means the DAQ is armed and waiting for the TTL.
 4. Press **T** (the stand-in for stimulus onset). The workflow pulses DO0 for 5 ms. The stimulus starts on that rising edge and runs for `StimDurationSeconds`.
-5. For a continuous stimulus set `StimDurationSeconds` to `-1`, press Space then T to start it, and press **S** to send `stop`, which ramps the laser down. `stop` on a trial that is armed but not yet triggered cancels it.
+5. For a continuous stimulus set `StimDurationSeconds` to `-1`, press Space then T to start it, and press **S** to send `stop`, which ramps the laser down. Press S before the next Space: Zapit refuses to arm over a continuous stimulus that is still playing. `stop` on a trial that is armed but not yet triggered cancels it.
 
 Keyboard events reach the `KeyDown` nodes whichever window has focus, so there is no need to click into Bonsai first.
 
@@ -116,5 +116,6 @@ This workflow was built from the package metadata and validated structurally (ed
 | `CreateOutputSetPayload` / `CreateOutputClearPayload` | Enum value `DO0` accepted                                                      |
 | `ArmedOk` condition                     | The expression `it.Contains("\"condition\"") && !it.Contains("\"error\"")` compiles          |
 | `Annotation`                            | Needs Bonsai 2.7 or later; delete it if an older editor complains                            |
+| `CsvWriter`                             | Each JSON reply lands whole in the `Value` column; the replies contain commas, so if they spread over several columns, log `ConvertToString` through a `Format` node that wraps the reply in double quotes |
 
 If any node fails to load, the fix is to drop it from the toolbox in the editor and reconnect, then save; the editor rewrites the XML with the correct serialization.
