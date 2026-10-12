@@ -12,7 +12,7 @@ Zapit scanning opto-stimulation system in Python (derived from Zapit-Optostim/za
 | `zapit/stim_config.py`, `zapit/atlas.py` | YAML configs, atlas lookup; `zapit/data/atlas.npz` |
 | `zapit/hardware/` | `daq.py`, `camera.py` (interfaces plus simulated), `nidaq.py`, `pylon.py` (real, untested on hardware) |
 | `zapit/server.py`, `zapit/client.py` | JSON over ZeroMQ REQ/REP |
-| `zapit/gui/` | `main_window.py`, `camera_view.py`, `config_editor.py`, `laser_dialog.py` |
+| `zapit/gui/` | `main_window.py`, `camera_view.py`, `config_editor.py`, `laser_dialog.py`, `help.py` (Help menu texts and links) |
 | `scripts/migrate_rig.py` | One-off conversion of a Zapit 1.x rig's files. The only code that knows the old formats |
 | `bonsai/` | Example environment and workflow; `docs/bonsai.md` is the protocol |
 | `tests/` | pytest, all simulated; `tests/data/` holds configs, the waveform reference and `legacy_rig/` for the migration test |
@@ -36,6 +36,7 @@ GUI tests run offscreen: set `QT_QPA_PLATFORM=offscreen`.
 - Add a settings key by extending `_SCHEMA` in `zapit/settings.py` with a default and a validator, then document it in `docs/settings.md`.
 - The app reads only current file formats. Conversions from older formats go in `scripts/migrate_rig.py`, never in the app.
 - The model emits `zapit.events.Signal` callbacks; the GUI bridges them to Qt signals in `ModelBridge`. Never import Qt in the core.
+- Every interactive control and menu action gets a tooltip saying what it does, whether it fires the laser, what it needs and what it saves; `test_every_control_says_what_it_does` fails on a bare one. A changed control updates its tooltip and, where they mention it, the texts in `zapit/gui/help.py`.
 - While `Zapit.trial_active`, on-demand AO writes and patterns are refused: on NI hardware an unclocked write clears the clocked task. Keep that guard on any new beam or laser method.
 - Tests use `tests/data/settings_test.yml` through `settings_path=`, which is never rewritten.
 - Docs are Markdown with one paragraph per line. No em-dashes.

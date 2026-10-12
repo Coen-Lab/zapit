@@ -56,8 +56,8 @@ class SamplePanel(QWidget):
         self.cancel_btn.setToolTip("Stop the sample calibration clicks and keep the previous calibration (Esc).")
         self.cancel_btn.clicked.connect(self.cancel_calibration)
         self.ref_ap = QComboBox()
-        self.ref_ap.setToolTip("AP of the second calibration point on the midline; changing it clears the "
-                               "sample calibration.")
+        self.ref_ap.setToolTip("AP of the second calibration point on the midline, in mm from bregma (negative "
+                               "is posterior). Saved to the settings; changing it clears the sample calibration.")
         for v in REF_AP_VALUES:
             self.ref_ap.addItem(f"{v:+d} mm", v)
         self.ref_ap.currentIndexChanged.connect(self._ref_ap_changed)
@@ -80,18 +80,20 @@ class SamplePanel(QWidget):
         for b in (self.paint_border_btn, self.overlay_btn, self.zap_all_btn, self.zap_site_btn, self.paint_area_btn):
             b.setCheckable(True)
         trial = " Disabled while a trial is armed or playing."
-        self.paint_border_btn.setToolTip("Trace the calibrated brain outline with the beam. "
-                                         "Needs a sample calibration." + trial)
-        self.overlay_btn.setToolTip("Draw the config's stimulus points on the image. "
-                                    "Needs a sample calibration and a loaded config.")
-        self.zap_all_btn.setToolTip("Hop the beam between every stimulus point. "
-                                    "Needs a sample calibration and a loaded config." + trial)
-        self.zap_site_btn.setToolTip("Hop the beam between the points of the chosen condition. "
-                                     "Needs a sample calibration and a loaded config." + trial)
-        self.paint_area_btn.setToolTip("Trace the chosen atlas area with the beam. "
-                                       "Needs a sample calibration." + trial)
+        laser = " The laser fires at the Laser slider's power (Calibrate scanners tab) until you press it again."
+        self.paint_border_btn.setToolTip("Trace the calibrated brain outline with the beam." + laser +
+                                         " Needs a sample calibration." + trial)
+        self.overlay_btn.setToolTip("Draw the config's stimulus points on the image, numbered by condition; the "
+                                    "laser stays off. Needs a sample calibration and a loaded config.")
+        self.zap_all_btn.setToolTip("Hop the beam between every stimulus point." + laser +
+                                    " Needs a sample calibration and a loaded config." + trial)
+        self.zap_site_btn.setToolTip("Hop the beam between the points of the condition chosen beside it." + laser
+                                     + " Needs a sample calibration and a loaded config." + trial)
+        self.paint_area_btn.setToolTip("Trace the atlas area chosen beside it with the beam." + laser +
+                                       " Needs a sample calibration." + trial)
         self.condition = QComboBox()
-        self.condition.setToolTip("Condition used by Zap site. Needs a loaded config.")
+        self.condition.setToolTip("Condition used by Zap site: number, type, points and power. Needs a "
+                                  "sample calibration and a loaded config.")
         self.area = QComboBox()
         self.area.setToolTip("Atlas area used by Paint area. Needs a sample calibration.")
         for a in self.model.atlas.areas:
@@ -122,14 +124,18 @@ class SamplePanel(QWidget):
                                    "(.csv). Needs a sample calibration and a loaded config.")
         self.export_btn.clicked.connect(lambda: self.export_waveforms())
         self.set_path_btn = QPushButton("Set experiment path")
-        self.set_path_btn.setToolTip("Folder where trial logs are written.")
+        self.set_path_btn.setToolTip("Choose the folder each trial is logged to: a zapit_log_<time>.yml with the "
+                                     "config and a zapit_trials_<time>.csv with one row per trial. A trial whose "
+                                     "log cannot be written (the CSV open in Excel) is refused.")
         self.clear_path_btn = QPushButton("Clear path")
-        self.clear_path_btn.setToolTip("Stop writing trial logs.")
+        self.clear_path_btn.setToolTip("Stop logging trials; they still run.")
         self.set_path_btn.clicked.connect(self.choose_experiment_path)
         self.clear_path_btn.clicked.connect(lambda: self.model.set_experiment_path(None))
         self.path_field = QLineEdit()
         self.path_field.setReadOnly(True)
         self.path_field.setPlaceholderText("no experiment path")
+        self.path_field.setToolTip("Where trials are logged now. A Bonsai or Python client can set it too "
+                                   "(set_experiment_path).")
         egrid.addWidget(self.export_btn, 0, 0, 1, 2)
         row = QHBoxLayout()
         row.addWidget(self.set_path_btn)

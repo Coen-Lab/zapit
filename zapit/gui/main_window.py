@@ -15,7 +15,6 @@ status bar.
 """
 from __future__ import annotations
 
-import webbrowser
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
@@ -27,12 +26,12 @@ from zapit import __version__
 from zapit import settings as settings_mod
 from zapit.gui.bridge import ModelBridge
 from zapit.gui.camera_view import CameraView
+from zapit.gui.help import build_help_menu
 from zapit.gui.sample_panel import SamplePanel
 from zapit.gui.scanner_panel import ScannerPanel, lamp, set_checked_quietly, set_lamp
 from zapit.pointer import NotReadyError
 from zapit.stim_config import StimConfigError
 
-DOCS_URL = "https://github.com/Coen-Lab/zapit"
 FRAME_INTERVAL_MS = 40
 SAMPLE_TAB_LAYERS = ("outline_calibrated", "stim_sites", "stim_labels")
 SCANNER_TAB_LAYERS = ("calib_all", "calib_current")
@@ -71,6 +70,7 @@ class MainWindow(QMainWindow):
         self._laser_dialog = None
         self._stim_coords_window = None
         self._open_messages: list[QMessageBox] = []
+        self.help_shown: tuple[str, str] | None = None   # the last Help text, kept for tests
 
         self.view = CameraView()
         self.tabs = QTabWidget()
@@ -80,6 +80,9 @@ class MainWindow(QMainWindow):
         self.sample_panel = SamplePanel(model, self.view, self)
         self.tabs.addTab(self.scanner_panel, "Calibrate scanners")
         self.tabs.addTab(self.sample_panel, "Calibrate sample")
+        self.tabs.setTabToolTip(0, "First: the camera, the scanner calibration, pointing and the laser")
+        self.tabs.setTabToolTip(1, "Second, after the scanners: register the skull to the atlas, check the "
+                                   "stimulus sites and set where trials are logged")
         self.tabs.currentChanged.connect(self._tab_changed)
 
         central = QWidget()
@@ -92,7 +95,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.state_label = QLabel()
+        self.state_label.setToolTip("idle: nothing armed. stim: a trial is armed (waiting for its TTL) or "
+                                    "playing. rampdown: a continuous trial is ramping the laser down")
         self.status_label = QLabel()
+        self.status_label.setToolTip("The last message: what was done or refused, and why")
         self.statusBar().addWidget(self.state_label)
         self.statusBar().addWidget(self.status_label, 1)
 
@@ -140,18 +146,29 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(strip)
         layout.setContentsMargins(4, 2, 4, 2)
         self.scanners_lamp = lamp("Scanners calibrated")
+        self.scanners_lamp.setToolTip("Green once a scanner calibration succeeded (Calibrate scanners tab). "
+                                      "Changing the camera ROI clears it")
         self.sample_lamp = lamp("Sample calibrated")
+        self.sample_lamp.setToolTip("Green once bregma and the reference point were clicked and accepted "
+                                    "(Calibrate sample tab). Changing the reference AP clears it")
         self.config_label = QLabel()
+        self.config_label.setToolTip("The stimulus config trials are drawn from (File, Load stim config)")
         self.server_label = QLabel()
         if server is not None:
             self.server_label.setText(f"Server: {server.bind}")
+            self.server_label.setToolTip("Bonsai or Python clients send trials to this address (Help, Bonsai and "
+                                         "the server). Set by server.bind in the settings")
         else:
             self.server_label.setText(server_message or "Server: off")
+            self.server_label.setToolTip("No client can send trials. server.enable and server.bind in the "
+                                         "settings control the server")
             if server_message and "failed" in server_message:
                 self.server_label.setStyleSheet(WARNING_STYLE)
         self.settings_warning = QLabel()
         self.settings_warning.setStyleSheet(WARNING_STYLE)
         self.settings_warning.setWordWrap(True)
+        self.settings_warning.setToolTip("Help, Open settings folder; every key is in Help, Documentation, "
+                                         "Settings reference")
         if getattr(self.model, "settings_unedited", False):
             self.settings_warning.setText(f"Settings file {self.model.settings_path} still holds the placeholder "
                                           f"{settings_mod.rig_keys_text()}: stimulation is refused until they are "
@@ -175,23 +192,31 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ menus
     def _build_menus(self):
         file_menu = self.menuBar().addMenu("&File")
-        self._add_action(file_menu, "New stim config...", self.new_stim_config, "Ctrl+N")
-        self._add_action(file_menu, "Load stim config...", self.load_stim_config_dialog, "Ctrl+O")
+        file_menu.setToolTipsVisible(True)
+        self._add_action(file_menu, "New stim config...", self.new_stim_config, "Ctrl+N",
+                         tip="Build a stimulus config by clicking on a top-down atlas; saving it loads it here")
+        self._add_action(file_menu, "Load stim config...", self.load_stim_config_dialog, "Ctrl+O",
+                         tip="Load the stimulus conditions that trials are drawn from. Refused during a trial")
         self.recent_menu = QMenu("Recent", self)
+        self.recent_menu.setToolTipsVisible(True)
         self.recent_menu.aboutToShow.connect(self._fill_recent)
         file_menu.addMenu(self.recent_menu)
-        self._add_action(file_menu, "Plot stim coords...", self.plot_stim_coords)
+        self._add_action(file_menu, "Plot stim coords...", self.plot_stim_coords,
+                         tip="Show the loaded config's points on the atlas, in stereotaxic mm")
         file_menu.addSeparator()
-        self._add_action(file_menu, "Laser calibration...", self.open_laser_dialog)
+        self._add_action(file_menu, "Laser calibration...", self.open_laser_dialog,
+                         tip="Measure the laser's power curve with a photodiode on AI0 and fit it")
         file_menu.addSeparator()
-        self._add_action(file_menu, "Quit", self.close, "Ctrl+Q")
-        help_menu = self.menuBar().addMenu("&Help")
-        self._add_action(help_menu, "Zapit on GitHub", lambda: webbrowser.open(DOCS_URL))
+        self._add_action(file_menu, "Quit", self.close, "Ctrl+Q", tip="Close Zapit and set the outputs to 0 V")
+        build_help_menu(self, self.menuBar().addMenu("&Help"))
 
-    def _add_action(self, menu: QMenu, text: str, slot, shortcut: str | None = None) -> QAction:
+    def _add_action(self, menu: QMenu, text: str, slot, shortcut: str | None = None,
+                    tip: str | None = None) -> QAction:
         act = QAction(text, self)
         if shortcut:
             act.setShortcut(QKeySequence(shortcut))
+        if tip:
+            act.setToolTip(tip)
         act.triggered.connect(lambda _checked=False: slot())
         menu.addAction(act)
         return act
@@ -202,7 +227,7 @@ class MainWindow(QMainWindow):
         if not recent:
             self.recent_menu.addAction("(none)").setEnabled(False)
         for p in recent:
-            self._add_action(self.recent_menu, str(p), lambda p=p: self.load_stim_config(p))
+            self._add_action(self.recent_menu, str(p), lambda p=p: self.load_stim_config(p), tip=f"Load {p.name}")
 
     # ------------------------------------------------------------------ stim config
     def new_stim_config(self):

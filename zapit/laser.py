@@ -54,7 +54,8 @@ class LaserFit:
             span = x.max() - x.min()
             p0 = [y.min(), y.max() - y.min(), 4.0 / span if span else 1.0, x.mean()]
             bounds = ([-np.inf, 0.0, 0.0, -np.inf], [np.inf, np.inf, np.inf, np.inf])
-            popt, _ = curve_fit(_sigmoid, x, y, p0=p0, bounds=bounds, maxfev=20000)
+            with np.errstate(over="ignore"):   # trial steepnesses overflow exp on flat data; the fit copes
+                popt, _ = curve_fit(_sigmoid, x, y, p0=p0, bounds=bounds, maxfev=20000)
             sig_pred = _sigmoid(x, *popt)
             sig_rmse = float(np.sqrt(np.mean((sig_pred - y) ** 2)))
             if sig_rmse < poly_rmse:

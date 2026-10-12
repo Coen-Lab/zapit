@@ -68,7 +68,7 @@ class ScannerPanel(QWidget):
         self.exposure.setRange(0, 1e6)
         self.exposure.setDecimals(0)
         self.exposure.setSuffix(" us")
-        self.exposure.setToolTip("Camera exposure for the live view, saved to the settings.")
+        self.exposure.setToolTip("Camera exposure for the live view, in microseconds, saved to the settings.")
         self.exposure.valueChanged.connect(self._exposure_changed)
         form.addRow("Exposure", self.exposure)
         roi_row = QHBoxLayout()
@@ -93,25 +93,28 @@ class ScannerPanel(QWidget):
         grid = QGridLayout(calib)
         self.run_btn = QPushButton(RUN_TEXT)
         self.run_btn.setCheckable(True)
-        self.run_btn.setToolTip("Sweep the beam over a grid, find it on the camera and fit the scanner "
-                                "transform. Press again to cancel." + TRIAL_NOTE)
+        self.run_btn.setToolTip("Sweep the beam over a grid with the laser at the slider's power, find it on "
+                                "the camera and fit the scanner transform. Press again to cancel." + TRIAL_NOTE)
         self.check_btn = QPushButton("Check calibration")
         self.check_btn.setCheckable(True)
-        self.check_btn.setToolTip("Slowly revisit the calibration points with the laser on. "
-                                  "Needs a scanner calibration." + TRIAL_NOTE)
+        self.check_btn.setToolTip("Slowly revisit the calibration points with the laser on at the slider's "
+                                  "power. Needs a scanner calibration." + TRIAL_NOTE)
         self.point_btn = QPushButton("Point mode")
         self.point_btn.setCheckable(True)
-        self.point_btn.setToolTip("Click on the image to send the beam there and measure the pointing error."
-                                  + TRIAL_NOTE)
+        self.point_btn.setToolTip("Switches the laser on. Click on the image to send the beam there and "
+                                  "measure the pointing error." + TRIAL_NOTE)
         self.cat_btn = QPushButton("Cat & mouse")
         self.cat_btn.setCheckable(True)
-        self.cat_btn.setToolTip("The beam follows the mouse cursor over the image." + TRIAL_NOTE)
+        self.cat_btn.setToolTip("Switches the laser on; the beam follows the mouse cursor over the image."
+                                + TRIAL_NOTE)
         grid.addWidget(self.run_btn, 0, 0)
         grid.addWidget(self.check_btn, 0, 1)
         grid.addWidget(self.point_btn, 1, 0)
         grid.addWidget(self.cat_btn, 1, 1)
         self.calib_result = QLabel("Not calibrated")
         self.calib_result.setWordWrap(True)
+        self.calib_result.setToolTip("The last calibration's result. A good fit leaves a residual of tens of "
+                                     "microns; above 100 um it is rejected")
         grid.addWidget(self.calib_result, 2, 0, 1, 2)
         root.addWidget(calib)
         self.run_btn.toggled.connect(self._run_toggled)
@@ -131,9 +134,12 @@ class ScannerPanel(QWidget):
         self.laser_btn.toggled.connect(self._laser_toggled)
         self.power = QSlider(Qt.Orientation.Horizontal)
         self.power.setRange(0, int(round(float(s["laser"]["maxValueInGUI"]) * 10)))
-        self.power.setToolTip("Laser power for pointing and check patterns, in mW." + TRIAL_NOTE)
+        self.power.setToolTip("Laser power in mW for pointing, the scanner calibration and every check "
+                              "pattern, saved to the settings (calibrateScanners.calibration_power_mW). Its "
+                              "maximum is laser.maxValueInGUI. Trials use their config's power." + TRIAL_NOTE)
         self.power.valueChanged.connect(self._power_changed)
         self.power_label = QLabel("0.0 mW")
+        self.power_label.setToolTip("The slider's laser power")
         self.power_label.setMinimumWidth(60)
         lrow.addWidget(self.laser_btn)
         lrow.addWidget(self.power, 1)
@@ -146,21 +152,25 @@ class ScannerPanel(QWidget):
         self.spacing.setRange(0.1, 50)
         self.spacing.setSingleStep(0.5)
         self.spacing.setSuffix(" mm")
-        self.spacing.setToolTip("Distance between neighbouring points of the calibration grid.")
+        self.spacing.setToolTip("Distance between neighbouring points of the calibration grid; smaller "
+                                "gives more points and a slower calibration. Saved to the settings.")
         self.buffer = QDoubleSpinBox()
         self.buffer.setRange(-50, 50)
         self.buffer.setSingleStep(0.5)
         self.buffer.setSuffix(" mm")
-        self.buffer.setToolTip("Margin kept free of calibration points at the image edges.")
+        self.buffer.setToolTip("Margin kept free of calibration points at the image edges. Saved to the "
+                               "settings.")
         self.threshold = QSpinBox()
         self.threshold.setRange(1, 1_000_000)
         self.threshold.setSuffix(" px")
-        self.threshold.setToolTip("Smallest bright area, in pixels, accepted as the beam spot.")
+        self.threshold.setToolTip("Smallest bright area, in pixels, accepted as the beam spot; raise it if "
+                                  "reflections are taken for the beam. Saved to the settings.")
         self.calib_exposure = QDoubleSpinBox()
         self.calib_exposure.setRange(0, 1e6)
         self.calib_exposure.setDecimals(0)
         self.calib_exposure.setSuffix(" us")
-        self.calib_exposure.setToolTip("Camera exposure used while the calibration looks for the beam.")
+        self.calib_exposure.setToolTip("Camera exposure, in microseconds, while the calibration looks for the "
+                                       "beam; short, so only the spot is bright. Saved to the settings.")
         pform.addRow("Point spacing", self.spacing)
         pform.addRow("Border buffer", self.buffer)
         pform.addRow("Size threshold", self.threshold)

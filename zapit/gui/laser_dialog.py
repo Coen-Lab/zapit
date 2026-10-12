@@ -59,6 +59,16 @@ class LaserDialog(QDialog):
         self.run_btn = QPushButton(RUN_TEXT)
         self.save_btn = QPushButton("Save and use fit")
         self.close_btn = QPushButton("Close")
+        self.run_btn.setToolTip("Step the laser control voltage over laser.laserMinMaxControlVolts in 25 mV "
+                                "steps, read the photodiode on AI0 at each and fit the curve (about 20 s). The "
+                                "rest of the window is locked meanwhile; press again to cancel. Disabled while a "
+                                "trial is armed or playing.")
+        self.save_btn.setToolTip("Save the new fit as laserFit.yml beside the settings file and use it for the "
+                                 "power of every later trial. Until then trials keep the fit they had.")
+        self.close_btn.setToolTip("Close the dialog; refused while a sweep runs, and asks before discarding an "
+                                  "unsaved fit.")
+        self.plot.setToolTip("White: the photodiode reading at each control voltage. Red: the fit. Power is "
+                             "read off the red curve, so it must rise steadily.")
         self.run_btn.clicked.connect(self._run_clicked)
         self.save_btn.clicked.connect(self.save_fit)
         self.close_btn.clicked.connect(self.close)

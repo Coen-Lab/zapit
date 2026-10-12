@@ -49,7 +49,9 @@ Python rewrite by the Coen Lab (UCL).
     residual above 100 um is rejected.
   * Camera flips (`flipImageLR`/`UD`) are honoured when drawing an ROI and in the sample-mm frame.
   * New PyQt6 GUI: live camera with mm axes, scanner and sample calibration, check patterns,
-    laser calibration dialog, and the atlas stimulus config editor.
+    laser calibration dialog, and the atlas stimulus config editor. Every control has a tooltip;
+    the Help menu has a quick start, keyboard and mouse, the documentation, the settings folder
+    and an About box.
   * Trial logs are `.csv` files with added `laser_on`, `power_capped` and `event` (`armed`,
     `started`, `disarmed`) columns and millisecond timestamps, written only once the DAQ accepts
     the trial; the experiment folder is created if needed. Each config gets its own parameter log and trials

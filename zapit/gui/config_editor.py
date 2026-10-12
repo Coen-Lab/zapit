@@ -35,6 +35,8 @@ from zapit.gui.atlas_view import DELETE_COLOUR, ENLARGED_SIZE, AtlasView, condit
 from zapit.stim_config import Condition, StimConfig, StimConfigError, pattern_conditions
 
 PATTERNS = ("grid", "cross", "mlline", "apline")
+GESTURES = ("Click: new condition.  Shift+click: add a point to the last condition (unilateral).  "
+            "Ctrl+click: delete the nearest condition.")
 
 
 class PatternDialog(QDialog):
@@ -51,6 +53,14 @@ class PatternDialog(QDialog):
         self.size = QDoubleSpinBox(decimals=2, minimum=0.1, maximum=10.0, singleStep=0.5, value=2.0)
         self.n_points = QSpinBox(minimum=2, maximum=20, value=3)
         self.bilateral = QCheckBox("Mirror each point into the other hemisphere")
+        self.ml.setToolTip("Mediolateral position of the pattern's centre, mm from the midline.")
+        self.ap.setToolTip("Anteroposterior position of the pattern's centre, mm from bregma (negative is "
+                           "posterior).")
+        self.pattern.setToolTip("grid: a square of points. cross: a line along ML and one along AP. mlline: a "
+                                "line along ML. apline: a line along AP. Each point is its own condition.")
+        self.size.setToolTip("Side of the grid, or length of each line, in mm.")
+        self.n_points.setToolTip("Points along each side or line.")
+        self.bilateral.setToolTip("Each condition gets the point and its mirror across the midline.")
         form.addRow("Centre ML (mm)", self.ml)
         form.addRow("Centre AP (mm)", self.ap)
         form.addRow("Pattern", self.pattern)
@@ -96,10 +106,15 @@ class StimConfigEditor(QMainWindow):
 
         self.cursor_label = QLabel("Stimulus config editor")
         self.cursor_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cursor_label.setToolTip("The cursor's stereotaxic position and the atlas area under it")
         column.addWidget(self.cursor_label)
 
         self.view = AtlasView(self.atlas)
         column.addWidget(self.view, stretch=1)
+        self.hint_label = QLabel(GESTURES)
+        self.hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.hint_label.setWordWrap(True)
+        column.addWidget(self.hint_label)
         self.view.mouse_moved.connect(self._on_mouse_moved)
         self.view.mouse_left.connect(self._on_mouse_left)
         self.view.mouse_clicked.connect(self._on_click)
@@ -115,11 +130,13 @@ class StimConfigEditor(QMainWindow):
         self.pattern_button = QPushButton("Add pattern...")
         for b in (self.new_button, self.load_button, self.save_button, self.save_as_button, self.pattern_button):
             buttons.addWidget(b)
-        self.new_button.setToolTip("Wipe any existing points and start over.")
-        self.load_button.setToolTip("Load an existing stim config file from disk.")
-        self.save_button.setToolTip("Save the current points to a stim config file.")
-        self.save_as_button.setToolTip("Save the current points to a new stim config file.")
-        self.pattern_button.setToolTip("Append a grid, cross or line of single-point conditions.")
+        self.new_button.setToolTip("Wipe every condition and start over (asks first).")
+        self.load_button.setToolTip("Load a stim config file to edit.")
+        self.save_button.setToolTip("Save to the file being edited, or ask for one. Asks first if a point is "
+                                    "outside the brain. A saved config is loaded into Zapit.")
+        self.save_as_button.setToolTip("Save to a new file. Asks first if a point is outside the brain. A saved "
+                                       "config is loaded into Zapit.")
+        self.pattern_button.setToolTip("Append a grid, cross or line of conditions around a centre point.")
         self.new_button.clicked.connect(self.new_config)
         self.load_button.clicked.connect(self.load_dialog)
         self.save_button.clicked.connect(self.save)
@@ -130,8 +147,10 @@ class StimConfigEditor(QMainWindow):
         panel.addLayout(form, stretch=1)
         self.unilateral_radio = QRadioButton("Unilateral")
         self.bilateral_radio = QRadioButton("Bilateral")
-        self.bilateral_radio.setToolTip("Adds two symmetric points, one per hemisphere. "
-                                        "Ctrl and click to delete a condition.")
+        self.unilateral_radio.setToolTip("A click adds a one-point condition; Shift+click adds a point to the "
+                                         "last condition.")
+        self.bilateral_radio.setToolTip("A click adds a condition of two points mirrored across the midline, "
+                                        "one per hemisphere.")
         self.bilateral_radio.setChecked(True)
         self._mode_group = QButtonGroup(self)
         self._mode_group.addButton(self.unilateral_radio)
@@ -144,13 +163,16 @@ class StimConfigEditor(QMainWindow):
 
         self.power_spin = QDoubleSpinBox(decimals=2, minimum=0.0, maximum=float(laser["laserMinMax_mW"][1]),
                                          singleStep=0.5, value=float(exp["defaultLaserPowerMW"]))
-        self.power_spin.setToolTip("Laser power in mW, applied to every condition while enabled.")
+        self.power_spin.setToolTip("Time-averaged laser power per point, in mW, for every condition. Disabled "
+                                   "when a loaded file's conditions differ; they then keep their own.")
         self.freq_spin = QDoubleSpinBox(decimals=1, minimum=1.0, maximum=1000.0, singleStep=1.0,
                                         value=float(exp["defaultLaserModulationFrequencyHz"]))
-        self.freq_spin.setToolTip("Frequency at which the laser switches between points or on and off.")
+        self.freq_spin.setToolTip("Modulation frequency for the whole file: how often per second the beam "
+                                  "visits each point, or the laser pulses for a one-point condition.")
         self.ramp_spin = QDoubleSpinBox(decimals=0, minimum=0.0, maximum=1000.0, singleStep=10.0,
                                         value=float(exp["offRampDownDuration_ms"]))
-        self.ramp_spin.setToolTip("Duration of the laser power ramp-down at the end of a trial.")
+        self.ramp_spin.setToolTip("How long the laser power ramps down at the end of a trial, in ms, for every "
+                                  "condition. Disabled when a loaded file's conditions differ.")
         form.addRow("Laser power (mW)", self.power_spin)
         form.addRow("Stim. freq. (Hz)", self.freq_spin)
         form.addRow("Rampdown (ms)", self.ramp_spin)
@@ -158,6 +180,7 @@ class StimConfigEditor(QMainWindow):
         self.ramp_spin.valueChanged.connect(self._apply_ramp)
 
         self.bottom_label = QLabel()
+        self.bottom_label.setToolTip("The file being edited and how many conditions it has")
         column.addWidget(self.bottom_label)
 
     # ------------------------------------------------------------------ state

@@ -369,6 +369,52 @@ def test_quitting_mid_sweep_cancels_it_before_the_hardware_closes(window):
     assert model.daq.laser_volts == 0
 
 
+def test_every_control_says_what_it_does(window):
+    from PyQt6.QtWidgets import (QAbstractButton, QAbstractSlider, QAbstractSpinBox, QComboBox, QDialogButtonBox,
+                                 QLineEdit, QScrollBar)
+    from zapit.gui.config_editor import PatternDialog
+    make_ready(window)
+    window.open_laser_dialog()
+    window.new_stim_config()
+    roots = [window, window._laser_dialog, window._config_editor, PatternDialog(window)]
+    bare = []
+    for root in roots:
+        for w in root.findChildren((QAbstractButton, QAbstractSpinBox, QComboBox, QLineEdit, QAbstractSlider)):
+            inner = isinstance(w.parent(), QAbstractSpinBox)              # a spinbox's own line edit
+            qt_part = (w.objectName().startswith(("qt_", "Scroll"))     # menu-bar extension, tab scroll arrows
+                       or isinstance(w, QScrollBar) or isinstance(w.parent(), QDialogButtonBox))   # OK, Cancel
+            if not inner and not qt_part and not w.toolTip():
+                bare.append(f"{type(root).__name__}: {type(w).__name__} {getattr(w, 'text', lambda: '')()!r}")
+    for menu in window.menuBar().findChildren(type(window.recent_menu)):
+        bare += [f"menu {a.text()!r}" for a in menu.actions()
+                 if a.text() and not a.isSeparator() and not a.menu() and not a.toolTip().strip()
+                 or (a.text() and not a.menu() and a.toolTip() == a.text().replace("&", "").replace("...", ""))]
+    assert not bare, bare
+    window._config_editor.close()
+
+
+def test_help_menu_items_work(window, monkeypatch):
+    import zapit.gui.help as help_mod
+    opened = []
+    monkeypatch.setattr(help_mod.webbrowser, "open", opened.append)
+    monkeypatch.setattr(help_mod.QDesktopServices, "openUrl", lambda url: opened.append(url.toLocalFile()) or True)
+    help_menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "&Help")
+    actions = {a.text(): a for a in help_menu.actions() if a.text() and not a.menu()}
+    docs = next(a.menu() for a in help_menu.actions() if a.menu() is not None)
+    actions["Quick start..."].trigger()
+    assert window.help_shown[0] == "Quick start" and "Run calibration" in window.help_shown[1]
+    actions["Keyboard and mouse..."].trigger()
+    assert "Ctrl+click" in window.help_shown[1]
+    actions["About Zapit..."].trigger()
+    assert str(window.model.settings_path) in window.help_shown[1]
+    actions["Open settings folder"].trigger()
+    assert Path(opened[-1]) == window.model.settings_path.parent
+    repo = Path(__file__).parents[1]
+    for a in docs.actions():
+        a.trigger()
+        assert (repo / opened[-1].split("/blob/main/")[1]).exists(), opened[-1]   # every link names a real file
+
+
 def test_load_garbage_config_keeps_running(window, tmp_path, monkeypatch):
     garbage = tmp_path / "garbage.yml"
     garbage.write_bytes(bytes(range(256)) * 4)
