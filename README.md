@@ -1,47 +1,95 @@
 # Zapit
-[![View zapit on File Exchange](https://www.mathworks.com/matlabcentral/images/matlab-file-exchange.svg)](https://uk.mathworks.com/matlabcentral/fileexchange/122142-zapit)
 
-Zapit is software that runs a scanning opto-stim system for head-fixed mouse behavior.
+Zapit runs a scanning opto-stimulation system for head-fixed mouse behaviour. A pair of galvo scanners steer a laser onto the exposed skull through a scan lens that also images the sample onto a camera. Zapit registers the scanners to the camera, registers stereotaxic coordinates onto the sample from two clicked reference points, and then plays clocked waveforms that hop the beam between the points of a stimulus condition at 40 Hz with the laser gated off while the mirrors move.
 
-## How it works
-A pair of scan mirrors deflect an incoming laser beam, which is focused onto the exposed skull with a lens.
-This lens is also used to image the sample onto a camera in order to visualise where the beam is pointing.
-Zapit registers the scanners to the camera, allowing the user to place the beam in any desired location by clicking there on a live image feed.
-Zapit then registers stereotaxic coordinates into the camera space, allowing the user to point the beam to coordinates defined with respect to bregma. 
-A graphical tool builds experiment coordinate files using a top-down view of the Allen Atlas.
-There is a simple MATLAB API for integrating stimulation into existing behavioral code and a Python version of the API [is also provided](https://github.com/Zapit-Optostim/zapit-Python-Bridge).
+This is the Coen Lab rewrite of [Zapit-Optostim/zapit](https://github.com/Zapit-Optostim/zapit) (Maja Skretowska and Rob Campbell, SWC) in Python, with a PyQt6 GUI and a ZeroMQ server so [Bonsai](https://bonsai-rx.org) drives trials. The MATLAB dependency, the MATLAB toolboxes and the .NET DAQmx wrapper are gone. Waveforms are identical to the MATLAB version sample for sample (checked in the test suite against upstream reference data). Stimulus config and settings YAML files from the MATLAB version load unchanged.
 
-![](https://github.com/Zapit-Optostim/.github/blob/main/calib_workflow.png)
+## What is in the box
 
-## Install & Usage
-See the [Installation & User Manual](https://zapit.swcmicroscopy.com).
-Please see the [list of known obvious bugs and issues](https://github.com/Zapit-Optostim/zapit/issues?q=is%3Aissue+is%3Aopen+label%3A%22Known+obvious+issue%22).
-There is a [Change Log](CHANGELOG.md) if you are concerned about applying updates.
+| Part | Where | Notes |
+|---|---|---|
+| Core model | `zapit/pointer.py` (`zapit.Zapit`) | Hardware, both calibrations, stimulus config, trial API, logging |
+| Waveforms | `zapit/waveforms.py` | One-cycle generation, finite trials, ramp-down, check patterns |
+| Stimulus configs | `zapit/stim_config.py` | YAML load/save, validation, atlas area names, pattern generator |
+| Atlas | `zapit/atlas.py`, `zapit/data/atlas.npz` | Top-down Allen atlas, 43 dorsal areas, converted from the upstream .mat |
+| Hardware | `zapit/hardware/` | `nidaq.py` (nidaqmx), `pylon.py` (Basler), simulated camera and DAQ |
+| Server | `zapit/server.py`, `zapit/client.py` | ZeroMQ REQ/REP, JSON. Protocol in `docs/bonsai.md` |
+| GUI | `zapit/gui/` | Main window (live camera, calibrations, checks) and the atlas stim config editor |
+| Bonsai | `bonsai/` | Example workflow: arm a trial over ZeroMQ, fire the TTL from a Harp board |
+| CLI | `zapit/cli.py` | `zapit gui`, `zapit server`, `zapit pattern`, `zapit check-config` |
 
+## Install
 
-## Requirements
-* [Image Processing Toolbox](https://www.mathworks.com/help/images/index.html)
-* [Image Acquisition Toolbox](https://www.mathworks.com/products/image-acquisition.html)
-* [DAQmx](https://www.ni.com/en-gb/support/downloads/drivers/download.ni-daqmx.html) installed with .NET support (tested versions: 19.0 to 21.8).
-* [Curve Fittting Toolbox](https://www.mathworks.com/help/curvefit/) (Desirable but perhaps not needed)
-* [Instrument Control Toolbox](https://uk.mathworks.com/products/instrument.html) (Optional)
-* Currently only Basler cameras are supported but in principle others can be incorporated. File an Issue if you need this. 
+Requirements: Windows 10/11, Python 3.11+, [uv](https://docs.astral.sh/uv/). For hardware: NI-DAQmx driver (any version nidaqmx supports) and the Basler pylon runtime.
 
-If any of the above Toolboxes are included in your licence but not installed, you may install them using the Add On Manager.
+```
+git clone https://github.com/Coen-Lab/zapit
+cd zapit
+uv sync --all-extras
+```
 
-## Hardware requirements
-Windows PC with at least 16 GB of RAM.
+Try it without hardware:
 
-## Contributing
-Code was written by Maja Skretowska and Rob Campbell at the Sainsbury Wellcome Centre (UCL) in 2021/2022.
-Contributions and collaborations are welcome.
-Please see the [CONTRIBUTING.md](CONTRIBUTING.md) file for more information.
+```
+uv run zapit gui --simulated
+```
 
+The simulated camera renders the beam spot where the simulated DAQ points it, with a hidden distortion, so the full scanner calibration, pointing checks and trial flow run and can be tested headless.
 
-## Related Projects
-* [laserGalvoControl](https://github.com/BrainCOGS/laserGalvoControl)
+## Running on a rig
 
+1. Wire the DAQ: AO0 galvo X, AO1 galvo Y, AO2 laser analog control, AO3 masking LED, PFI0 the trigger input (a Harp digital output in the Bonsai example). AI0 is a photodiode, only needed for the laser power calibration. See `docs/hardware.md`.
+2. Start the GUI once with `uv run zapit gui`. It writes a default settings file to `%USERPROFILE%\ZapitSettings\zapitSystemSettings.yml`. Edit the NI device name, camera scale (`micronsPerPixel`), scanner `voltsPerPixel`, laser min/max control volts and mW. Every key is described in `docs/settings.md`.
+3. In the GUI: set the camera ROI if needed, run the scanner calibration (Calibrate scanners tab), click bregma and the reference point on the live image (Calibrate sample tab), load a stimulus config.
+4. Run trials from Bonsai (see `bonsai/README.md`) or from Python:
 
-## Inspiration
-This project was inspired by studies from [Svoboda](https://www.cell.com/neuron/fulltext/S0896-6273(13)00924-0) and [Tank and Brody](https://elifesciences.org/articles/70263). 
+```python
+from zapit.client import ZapitClient
+z = ZapitClient("tcp://localhost:5555")
+z.status()
+r = z.send_samples(stim_duration_s=1.5)        # random condition, waits for a TTL on PFI0
+r["condition"], r["laser_on"]
+z.send_samples(condition=2, hardware_triggered=False)   # continuous, starts now
+z.stop()                                                # ramps the laser down
+```
 
+Or drive the model directly in a Python session (`zapit.Zapit`, see `docs/api.md`).
+
+Trials are logged automatically when an experiment path is set: a `zapit_log_<time>.yml` with every condition and the software version, and a `zapit_trials_<time>.csv` with one row per presentation.
+
+## Stimulus config files
+
+The YAML format is unchanged from upstream. The editor (File, New stim config) places points on a top-down atlas by clicking; `zapit pattern` writes grids, crosses and lines from the command line; `zapit check-config file.yml` validates a file against the current settings and prints the brain area under each point.
+
+```yaml
+stimLocations01:
+  ML: [3.56, -3.56]
+  AP: [-1.24, -1.24]
+  Class: stimulate
+  Type: bilateral_points
+  Attributes: {laserPowerInMW: 2.0, offRampDownDuration_ms: 250.0}
+stimModulationFreqHz: 40.0
+```
+
+`laserPowerInMW` is time-averaged power per point: with two points each lit half the time, the laser runs at twice that while on.
+
+## Tests
+
+```
+uv run pytest
+```
+
+Everything runs against the simulated hardware. The waveform test compares every sample against `tests/data/chan_samples_reference.npz`, generated by the MATLAB version from `tests/data/uniAndBilateral_5_conditions.yml`.
+
+## Documentation
+
+- `docs/plan.md`: the port plan, architecture decisions, and what is not yet verified on hardware
+- `docs/hardware.md`: wiring, DAQ and camera notes
+- `docs/settings.md`: every settings key
+- `docs/api.md`: the Python model API
+- `docs/bonsai.md`: the ZeroMQ protocol for any client
+- `bonsai/README.md`: the example Bonsai workflow
+
+## Licence and credit
+
+GPL-3.0, as upstream. The original design, the calibration approach and the waveform scheme are Maja Skretowska's and Rob Campbell's; the Python port is by the Coen Lab (UCL). Inspired by [Guo et al. 2014](https://www.cell.com/neuron/fulltext/S0896-6273(13)00924-0) and [Pinto et al. 2019](https://elifesciences.org/articles/70263).

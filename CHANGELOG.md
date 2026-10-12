@@ -12,17 +12,30 @@ The project largely adheres to [semantic versioning](http://semver.org) guidelin
 * The PATCH version is incremented when there are backwards compatible bug fixes. It will also be incremented by the addition of new example code snippets, addition of tests, or by code changes which result in no functionality change. 
 
 ### NOTE ON CONVENTIONS IN THIS FILE
-The function zapit.updater.getVersionFromChangeLog extracts the software version number
-from this file. For this to work the version must be written out in this format:
-YEAR/MONTH/DAY -- vMAJOR.MINOR.PATCH.
+Entries are dated YEAR/MONTH/DAY and carry the version as vMAJOR.MINOR.PATCH. From v2.0.0 the
+software version lives in pyproject.toml; this file is a record only.
 
-
-### Upgrade Notifications
-The Zapit main window will print a notification in the title bar when a new version is available.
-NOTE: the version number of the software is taken from the last version number in the version history in this file!
 
 ## Version History
 
+
+### 2026/10/12 v2.0.0
+Python rewrite by the Coen Lab (UCL). MATLAB is no longer required.
+
+  * BREAKING: the application is a Python package (`uv run zapit gui`). The MATLAB API, the
+    App Designer GUIs, the .NET DAQmx wrapper, the TCP byte protocol, the shared-memory Python
+    bridge, the update checker and the support-report tool are removed.
+  * Hardware through nidaqmx (NI) and pypylon (Basler) behind interfaces with simulated twins;
+    the whole calibration and trial flow runs headless in simulated mode and is covered by tests.
+  * Waveforms are identical to v1.0.4 sample for sample (regression test against MATLAB output).
+  * Stimulus config YAML files load unchanged. Settings YAML files load unchanged; obsolete
+    keys are dropped with a backup. The laser fit is stored as `laserFit.yml`.
+  * New ZeroMQ REQ/REP JSON server (`zapit/server.py`) and Python client; an example Bonsai
+    workflow arms trials and fires the trigger from a Harp board.
+  * New PyQt6 GUI: live camera with mm axes, scanner and sample calibration, check patterns,
+    laser calibration dialog, and the atlas stimulus config editor.
+  * Trial logs are `.csv` files with an added `laser_on` column.
+  * CLI: `zapit gui`, `zapit server`, `zapit pattern`, `zapit check-config`.
 
 ### 2026/08/16 v1.0.4
 Many bug fixes to coincide with release of Zapit on eLife. 

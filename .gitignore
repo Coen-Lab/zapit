@@ -1,8 +1,18 @@
-*.pyc
-*.asv
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Bonsai
+**/.bonsai/Packages/
+**/.bonsai/Bonsai.exe
+**/.bonsai/Bonsai.exe.settings
+
+# Editors / OS
 .DS_Store
-code/+zapit/+gui/notes.txt
-python_link_notes.txt
-convert2UnixEndings.sh
 /.claude
 /claude

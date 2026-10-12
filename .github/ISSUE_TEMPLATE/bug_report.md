@@ -1,31 +1,16 @@
 ---
 name: Bug report
-about: Create a report to help us improve
+about: Something does not work
 title: ''
 labels: bug
-assignees: raacampbell
+assignees: ''
 
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+**What happened**
+What you did, what you expected, what happened instead. Paste the console output (the terminal that started `zapit gui`) in a code block.
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
-
-**Expected behavior**
-A clear and concise description of what you expected to happen.
-
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
-
-**Desktop (please complete the following information):**
- - Zapit Version [e.g. 0.20.2]
- - MATLAB Version [e.g. R2022a]
-
-**Additional context**
-Add any other context about the problem here.
+**Setup**
+ - Zapit version (`uv run python -c "import zapit; print(zapit.__version__)"`)
+ - Hardware or `--simulated`
+ - Windows version, NI-DAQmx version, camera model

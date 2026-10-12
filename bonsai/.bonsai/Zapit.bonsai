@@ -1,0 +1,196 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<WorkflowBuilder Version="2.9.1"
+                 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                 xmlns:wie="clr-namespace:Bonsai.Windows.Input;assembly=Bonsai.Windows.Input"
+                 xmlns:zmq="clr-namespace:Bonsai.ZeroMQ;assembly=Bonsai.ZeroMQ"
+                 xmlns:beh="clr-namespace:Harp.Behavior;assembly=Harp.Behavior"
+                 xmlns:harp="clr-namespace:Bonsai.Harp;assembly=Bonsai.Harp"
+                 xmlns:rx="clr-namespace:Bonsai.Reactive;assembly=Bonsai.Core"
+                 xmlns:scr="clr-namespace:Bonsai.Scripting.Expressions;assembly=Bonsai.Scripting.Expressions"
+                 xmlns:io="clr-namespace:Bonsai.IO;assembly=Bonsai.System"
+                 xmlns="https://bonsai-rx.org/2018/workflow">
+  <Workflow>
+    <Nodes>
+      <Expression xsi:type="ExternalizedMapping">
+        <Property Name="ZapitAddress" />
+        <Property Name="StimDurationSeconds" />
+        <Property Name="LogFileName" />
+      </Expression>
+      <Expression xsi:type="GroupWorkflow">
+        <Name>ZapitClient</Name>
+        <Description>Sends JSON commands to the Zapit ZeroMQ server, logs every reply, and publishes the reply to each successful send_samples so the trigger pulse can follow it.</Description>
+        <Workflow>
+          <Nodes>
+            <Expression xsi:type="Annotation">
+              <Name>Where the task plugs in</Name>
+              <Text><![CDATA[The two KeyDown nodes are stand-ins for the demo. In a real task, delete the Space KeyDown and connect your trial-start event (for example a SubscribeSubject carrying the visual stimulus onset) to the WithLatestFrom node in its place. Anything that emits once per trial works; the value is ignored. The S KeyDown can likewise be replaced by whatever ends a continuous stimulus.]]></Text>
+            </Expression>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="wie:KeyDown">
+                <wie:Filter>Space</wie:Filter>
+                <wie:SuppressRepetitions>true</wie:SuppressRepetitions>
+              </Combinator>
+            </Expression>
+            <Expression xsi:type="ExternalizedMapping">
+              <Property Name="Value" DisplayName="StimDurationSeconds" Description="Stimulus duration in seconds sent with each send_samples request. Use -1 for a continuous stimulus that runs until stop." Category="Zapit" />
+            </Expression>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="DoubleProperty">
+                <Value>1.5</Value>
+              </Combinator>
+            </Expression>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="rx:WithLatestFrom" />
+            </Expression>
+            <Expression xsi:type="Format">
+              <Format>{{"cmd":"send_samples","condition":null,"laser_on":null,"hardware_triggered":true,"stim_duration_s":{0}}}</Format>
+              <Selector>Item2</Selector>
+            </Expression>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="wie:KeyDown">
+                <wie:Filter>S</wie:Filter>
+                <wie:SuppressRepetitions>true</wie:SuppressRepetitions>
+              </Combinator>
+            </Expression>
+            <Expression xsi:type="Format">
+              <Format>{{"cmd":"stop"}}</Format>
+              <Selector />
+            </Expression>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="rx:Merge" />
+            </Expression>
+            <Expression xsi:type="ExternalizedMapping">
+              <Property Name="ConnectionString" DisplayName="ZapitAddress" Description="ZeroMQ endpoint of the Zapit server. The server binds tcp://*:5555 by default, so this is tcp://localhost:5555 on the same machine or tcp://&lt;host&gt;:5555 across the network." Category="Zapit" />
+            </Expression>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="zmq:Request">
+                <zmq:ConnectionString>tcp://localhost:5555</zmq:ConnectionString>
+              </Combinator>
+            </Expression>
+            <Expression xsi:type="MemberSelector">
+              <Selector>First</Selector>
+            </Expression>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="zmq:ConvertToString" />
+            </Expression>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="rx:Timestamp" />
+            </Expression>
+            <Expression xsi:type="ExternalizedMapping">
+              <Property Name="FileName" DisplayName="LogFileName" Description="CSV file that receives one row per reply from Zapit, with the Bonsai timestamp. Appended to, so one file can span sessions." Category="Logging" />
+            </Expression>
+            <Expression xsi:type="io:CsvWriter">
+              <io:FileName>zapit_replies.csv</io:FileName>
+              <io:Append>true</io:Append>
+              <io:Overwrite>false</io:Overwrite>
+              <io:Suffix>None</io:Suffix>
+              <io:IncludeHeader>true</io:IncludeHeader>
+              <io:Selector />
+            </Expression>
+            <Expression xsi:type="rx:Condition">
+              <Name>ArmedOk</Name>
+              <Description>Passes only the reply to a successful send_samples. Those replies carry a condition field and never an error field; stop and error replies are dropped here so they cannot fire the trigger.</Description>
+              <Workflow>
+                <Nodes>
+                  <Expression xsi:type="WorkflowInput">
+                    <Name>Source1</Name>
+                  </Expression>
+                  <Expression xsi:type="scr:ExpressionTransform">
+                    <scr:Expression>it.Contains("\"condition\"") &amp;&amp; !it.Contains("\"error\"")</scr:Expression>
+                  </Expression>
+                  <Expression xsi:type="WorkflowOutput" />
+                </Nodes>
+                <Edges>
+                  <Edge From="0" To="1" Label="Source1" />
+                  <Edge From="1" To="2" Label="Source1" />
+                </Edges>
+              </Workflow>
+            </Expression>
+            <Expression xsi:type="rx:PublishSubject">
+              <Name>ZapitArmed</Name>
+            </Expression>
+          </Nodes>
+          <Edges>
+            <Edge From="1" To="4" Label="Source1" />
+            <Edge From="2" To="3" Label="Source1" />
+            <Edge From="3" To="4" Label="Source2" />
+            <Edge From="4" To="5" Label="Source1" />
+            <Edge From="5" To="8" Label="Source1" />
+            <Edge From="6" To="7" Label="Source1" />
+            <Edge From="7" To="8" Label="Source2" />
+            <Edge From="8" To="10" Label="Source1" />
+            <Edge From="9" To="10" Label="Source1" />
+            <Edge From="10" To="11" Label="Source1" />
+            <Edge From="11" To="12" Label="Source1" />
+            <Edge From="12" To="13" Label="Source1" />
+            <Edge From="12" To="16" Label="Source1" />
+            <Edge From="13" To="15" Label="Source1" />
+            <Edge From="14" To="15" Label="Source1" />
+            <Edge From="16" To="17" Label="Source1" />
+          </Edges>
+        </Workflow>
+      </Expression>
+      <Expression xsi:type="ExternalizedMapping">
+        <Property Name="PortName" />
+      </Expression>
+      <Expression xsi:type="GroupWorkflow">
+        <Name>TriggerPulse</Name>
+        <Description>On each ZapitArmed reply, raises DO0 on the Harp Behavior board for 5 ms. DO0 is wired to the NI DAQ PFI0 and its rising edge starts the stimulus.</Description>
+        <Workflow>
+          <Nodes>
+            <Expression xsi:type="SubscribeSubject">
+              <Name>ZapitArmed</Name>
+            </Expression>
+            <Expression xsi:type="beh:CreateMessage">
+              <harp:MessageType>Write</harp:MessageType>
+              <harp:Payload xsi:type="beh:CreateOutputSetPayload">
+                <beh:OutputSet>DO0</beh:OutputSet>
+              </harp:Payload>
+            </Expression>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="rx:Delay">
+                <rx:DueTime>PT0.005S</rx:DueTime>
+              </Combinator>
+            </Expression>
+            <Expression xsi:type="beh:CreateMessage">
+              <harp:MessageType>Write</harp:MessageType>
+              <harp:Payload xsi:type="beh:CreateOutputClearPayload">
+                <beh:OutputClear>DO0</beh:OutputClear>
+              </harp:Payload>
+            </Expression>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="rx:Merge" />
+            </Expression>
+            <Expression xsi:type="ExternalizedMapping">
+              <Property Name="PortName" Description="Serial port of the Harp Behavior board, from Device Manager under Ports (COM &amp; LPT)." Category="Harp" />
+            </Expression>
+            <Expression xsi:type="Combinator">
+              <Combinator xsi:type="beh:Device">
+                <harp:OperationMode>Active</harp:OperationMode>
+                <harp:OperationLed>On</harp:OperationLed>
+                <harp:DumpRegisters>true</harp:DumpRegisters>
+                <harp:VisualIndicators>On</harp:VisualIndicators>
+                <harp:Heartbeat>Disabled</harp:Heartbeat>
+                <harp:IgnoreErrors>false</harp:IgnoreErrors>
+                <harp:PortName>COM3</harp:PortName>
+              </Combinator>
+            </Expression>
+          </Nodes>
+          <Edges>
+            <Edge From="0" To="1" Label="Source1" />
+            <Edge From="1" To="2" Label="Source1" />
+            <Edge From="1" To="4" Label="Source1" />
+            <Edge From="2" To="3" Label="Source1" />
+            <Edge From="3" To="4" Label="Source2" />
+            <Edge From="4" To="6" Label="Source1" />
+            <Edge From="5" To="6" Label="Source1" />
+          </Edges>
+        </Workflow>
+      </Expression>
+    </Nodes>
+    <Edges>
+      <Edge From="0" To="1" Label="Source1" />
+      <Edge From="2" To="3" Label="Source1" />
+    </Edges>
+  </Workflow>
+</WorkflowBuilder>

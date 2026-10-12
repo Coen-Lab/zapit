@@ -1,17 +1,12 @@
 ---
 name: Feature request
-about: Suggest an idea for this project
+about: Suggest a change
 title: ''
 labels: enhancement
-assignees: raacampbell
+assignees: ''
 
 ---
 
-**Is your feature request related to a problem? Please describe.**
-A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
+**What you want to do and why**
 
-**Describe the feature/solution you'd like**
-A clear and concise description of what you want to happen.
-
-**Additional context**
-Add any other context or screenshots about the feature request here.
+**How it could work**
