@@ -131,6 +131,54 @@ def test_a_laser_sweep_can_be_cancelled(model):
     assert len(steps) == 3 and model.daq.laser_volts == 0 and model.laser.fit is None
 
 
+def test_a_trial_armed_mid_sweep_stops_it_and_says_why(ready_model):
+    # Once the sweep ended on "Cannot set the laser while a trial is armed", raised by its own zeroing write.
+    m = ready_model
+    steps = []
+    read = m.daq.read_analog
+
+    def read_and_arm(ch):
+        steps.append(1)
+        if len(steps) == 3:
+            m.send_samples(hardware_triggered=True)    # a Bonsai client arms
+        return read(ch)
+    m.daq.read_analog = read_and_arm
+    with pytest.raises(NotReadyError, match="client armed a trial"):
+        m.generate_laser_calibration_curve()
+    assert m.state == "stim" and m.daq.ao_mode() == "continuous" and m._last_laser_volts == 0
+    assert m.laser.fit is None
+    m.stop_opto_stim()
+
+
+def test_a_hand_edit_of_the_settings_file_survives_the_gui_writing_it(data_dir, tmp_path, monkeypatch):
+    # Once moving the power slider rewrote the whole file from memory and silently undid the edit.
+    import shutil
+
+    import yaml
+
+    from zapit.pointer import Zapit
+    path = tmp_path / "zapitSystemSettings.yml"
+    shutil.copyfile(data_dir / "settings_test.yml", path)
+    monkeypatch.setenv("ZAPIT_SETTINGS", str(tmp_path))
+    m = Zapit(simulated=True, start_camera=False)
+    try:
+        assert m.settings_path == path and m.settings_edited_outside == []
+        raw = yaml.safe_load(path.read_text())
+        raw["laser"]["laserMinMax_mW"] = [0.5, 42.0]
+        path.write_text(yaml.safe_dump(raw))
+        m.update_setting("calibrateScanners", "calibration_power_mW", 3.5)
+        on_disk = yaml.safe_load(path.read_text())
+        assert on_disk["laser"]["laserMinMax_mW"] == [0.5, 42.0]          # kept for the next start
+        assert on_disk["calibrateScanners"]["calibration_power_mW"] == 3.5
+        assert m.settings["laser"]["laserMinMax_mW"] == [0.05, 57.0]      # in use until a restart
+        assert m.settings_edited_outside == ["laser.laserMinMax_mW"]
+        path.write_text("laser: [unclosed\n")                             # an edit half done
+        m.update_setting("calibrateScanners", "calibration_power_mW", 4.0)
+        assert path.read_text() == "laser: [unclosed\n"
+    finally:
+        m.close()
+
+
 def test_patterns_play_and_stop(ready_model):
     m = ready_model
     m.zap_all_coords()

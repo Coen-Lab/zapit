@@ -169,11 +169,7 @@ class MainWindow(QMainWindow):
         self.settings_warning.setWordWrap(True)
         self.settings_warning.setToolTip("Help, Open settings folder; every key is in Help, Documentation, "
                                          "Settings reference")
-        if getattr(self.model, "settings_unedited", False):
-            self.settings_warning.setText(f"Settings file {self.model.settings_path} still holds the placeholder "
-                                          f"{settings_mod.rig_keys_text()}: stimulation is refused until they are "
-                                          f"set for this rig")
-        self.settings_warning.setVisible(bool(self.settings_warning.text()))
+        self._show_settings_warning()
         layout.addWidget(self.scanners_lamp)
         layout.addWidget(self.sample_lamp)
         layout.addWidget(self.config_label)
@@ -194,7 +190,8 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("&File")
         file_menu.setToolTipsVisible(True)
         self._add_action(file_menu, "New stim config...", self.new_stim_config, "Ctrl+N",
-                         tip="Build a stimulus config by clicking on a top-down atlas; saving it loads it here")
+                         tip="Build a stimulus config by clicking on a top-down atlas; saving it loads it here. "
+                             "Brings an open editor forward")
         self._add_action(file_menu, "Load stim config...", self.load_stim_config_dialog, "Ctrl+O",
                          tip="Load the stimulus conditions that trials are drawn from. Refused during a trial")
         self.recent_menu = QMenu("Recent", self)
@@ -231,6 +228,12 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ stim config
     def new_stim_config(self):
+        """Show the stimulus config editor; an open one is brought forward, so its unsaved work is kept."""
+        old = self._config_editor
+        if old is not None and old.isVisible():
+            old.raise_()
+            old.activateWindow()
+            return
         try:
             from zapit.gui.config_editor import StimConfigEditor
         except Exception as e:  # the editor is a separate module that may be missing or broken
@@ -420,6 +423,20 @@ class MainWindow(QMainWindow):
     def _on_settings(self, _settings):
         self.scanner_panel.refresh_from_settings()
         self.sample_panel.refresh_from_settings()
+        self._show_settings_warning()
+
+    def _show_settings_warning(self):
+        """The strip's warning: placeholder rig values, and hand edits that wait for a restart."""
+        parts = []
+        if self.model.settings_unedited:
+            parts.append(f"Settings file {self.model.settings_path} still holds the placeholder "
+                         f"{settings_mod.rig_keys_text()}: stimulation is refused until they are set for this "
+                         f"rig and Zapit is restarted")
+        if self.model.settings_edited_outside:
+            parts.append(f"The settings file was edited while Zapit runs "
+                         f"({', '.join(self.model.settings_edited_outside)}): restart Zapit to use the new values")
+        self.settings_warning.setText(". ".join(parts))
+        self.settings_warning.setVisible(bool(parts))
 
     def update_title(self):
         name = self.model.stim_config.name if self.model.stim_config else "no config"
@@ -537,6 +554,9 @@ class MainWindow(QMainWindow):
         elif self._laser_dialog is not None and self._laser_dialog.new_fit is not None:
             question = ("The new laser fit has not been saved and is not in use. Discard it, close Zapit and "
                         "stop the hardware?")
+        elif self._config_editor is not None and self._config_editor.isVisible() and self._config_editor.unsaved:
+            question = ("The stim config editor has unsaved conditions. Discard them, close Zapit and stop the "
+                        "hardware?")
         if self.dialogs_enabled and not self.ask("Quit Zapit", question):
             event.ignore()
             return

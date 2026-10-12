@@ -252,6 +252,40 @@ def save_settings(settings: dict[str, Any], path: str | os.PathLike) -> None:
         yaml.safe_dump(settings, fh, sort_keys=False, default_flow_style=None)
 
 
+def write_setting(path: str | os.PathLike, section: str, key: str, value,
+                  in_use: dict[str, Any]) -> dict[str, Any] | None:
+    """Write one key into the settings file as it is on disk now, so a hand edit made since start-up is kept.
+
+    A missing file is written whole from ``in_use``. A file that cannot be read as current settings (a hand
+    edit half done, or a 1.x file put back) is left alone and None returned. Returns the settings written.
+    """
+    path = Path(path)
+    if not path.exists():
+        on_disk = copy.deepcopy(in_use)
+    else:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                raw = yaml.safe_load(fh) or {}
+        except (OSError, yaml.YAMLError) as e:
+            print(f"WARNING: {path} could not be read ({e}); {section}.{key} was not saved to it")
+            return None
+        if old_layout_markers(raw) or not isinstance(raw, dict):
+            print(f"WARNING: {path} is not a current settings file; {section}.{key} was not saved to it")
+            return None
+        on_disk, valid = validate(raw)
+        if not valid:
+            _backup(path, on_disk["general"]["maxSettingsBackUpFiles"])
+    on_disk[section][key] = copy.deepcopy(value)
+    save_settings(on_disk, path)
+    return on_disk
+
+
+def differing_keys(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
+    """``section.key`` of every schema key whose value differs between two settings dicts."""
+    return [f"{sec}.{key}" for sec, leaves in _SCHEMA.items() for key in leaves
+            if a.get(sec, {}).get(key) != b.get(sec, {}).get(key)]
+
+
 def _backup(path: Path, keep: int) -> None:
     bdir = path.parent / "backups"
     bdir.mkdir(exist_ok=True)

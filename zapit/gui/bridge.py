@@ -67,11 +67,13 @@ class Worker(QThread):
         self._kwargs = kwargs
         self.result = None
         self.error: str | None = None
+        self.exception: Exception | None = None   # the raised exception, for a slot that needs more than text
 
     def run(self):
         try:
             self.result = self._fn(*self._args, **self._kwargs)
         except Exception as e:  # reported to the GUI, never swallowed silently
+            self.exception = e
             self.error = f"{type(e).__name__}: {e}"
             self.failed.emit(self.error)
             return

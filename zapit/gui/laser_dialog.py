@@ -12,9 +12,13 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout
 
 from zapit.gui.bridge import Worker
+from zapit.laser import LaserFitRefused
+from zapit.pointer import NotReadyError
 
 RUN_TEXT = "Run sweep"
 CANCEL_TEXT = "Cancel sweep"
+FIT_PEN = pg.mkPen("r", width=2)
+REFUSED_PEN = pg.mkPen("r", width=2, style=Qt.PenStyle.DashLine)
 
 
 class LaserDialog(QDialog):
@@ -48,7 +52,7 @@ class LaserDialog(QDialog):
         self.plot.addLegend()
         self.measured = self.plot.plot([], [], pen=None, symbol="o", symbolSize=6,
                                        symbolBrush="w", name="measured")
-        self.fitted = self.plot.plot([], [], pen=pg.mkPen("r", width=2), name="fit")
+        self.fitted = self.plot.plot([], [], pen=FIT_PEN, name="fit")
         layout.addWidget(self.plot, 1)
 
         self.info = QLabel()
@@ -67,8 +71,8 @@ class LaserDialog(QDialog):
                                  "power of every later trial. Until then trials keep the fit they had.")
         self.close_btn.setToolTip("Close the dialog; refused while a sweep runs, and asks before discarding an "
                                   "unsaved fit.")
-        self.plot.setToolTip("White: the photodiode reading at each control voltage. Red: the fit. Power is "
-                             "read off the red curve, so it must rise steadily.")
+        self.plot.setToolTip("White: the photodiode reading at each control voltage. Red: the fit (dashed: a "
+                             "refused one). Power is read off the red curve, so it must rise steadily.")
         self.run_btn.clicked.connect(self._run_clicked)
         self.save_btn.clicked.connect(self.save_fit)
         self.close_btn.clicked.connect(self.close)
@@ -81,6 +85,7 @@ class LaserDialog(QDialog):
 
     def show_fit(self, fit, new: bool = False):
         self.save_btn.setEnabled(self.new_fit is not None)
+        self.fitted.setPen(FIT_PEN)
         if fit is None:
             self.measured.setData([], [])
             self.fitted.setData([], [])
@@ -93,6 +98,9 @@ class LaserDialog(QDialog):
                 f"until you press Save and use fit") if new else \
             (f"Fit in use: {fit.fit_type}, RMSE {fit.rmse:.4g}, {len(fit.control_values)} points, "
              f"made {fit.date_made or 'unknown'}")
+        problem = None if new else fit.problem()
+        if problem:   # a fit saved before the check existed, or brought over from Zapit 1.x
+            what += f". WARNING: {problem}; run a new sweep"
         self.info.setText(what)
 
     def set_trial_locked(self, locked: bool):
@@ -153,8 +161,17 @@ class LaserDialog(QDialog):
 
     def _sweep_failed(self, msg: str):
         self._end_sweep()
-        self.info.setText(f"Sweep failed: {msg}")
-        self.notify("Laser calibration", msg, "critical")
+        exc = self.worker.exception if self.worker is not None else None
+        if isinstance(exc, LaserFitRefused):
+            # Show what was measured, so the user can tell a photodiode out of the beam from a laser problem.
+            self.measured.setData(exc.fit.control_values, exc.fit.sensor_values)
+            self.fitted.setData(exc.fit.control_values, exc.fit.fitted_sensor_values)
+            self.fitted.setPen(REFUSED_PEN)
+            self.info.setText(f"Sweep refused (readings plotted, the refused fit dashed): {exc}")
+        else:
+            self.info.setText(f"Sweep failed: {msg}")
+        expected = isinstance(exc, (LaserFitRefused, NotReadyError))
+        self.notify("Laser calibration", str(exc) if expected else msg, "warning" if expected else "critical")
 
     def save_fit(self):
         if self.new_fit is None:

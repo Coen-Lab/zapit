@@ -369,6 +369,66 @@ def test_quitting_mid_sweep_cancels_it_before_the_hardware_closes(window):
     assert model.daq.laser_volts == 0
 
 
+def test_a_refused_sweep_shows_what_it_measured(window):
+    # Once a refused sweep left the plot empty, so a photodiode fault and a laser problem looked the same.
+    model = make_ready(window)
+    model.daq.ai_source = lambda ch: float(np.random.default_rng().normal()) * 0.01
+    window.open_laser_dialog()
+    dialog = window._laser_dialog
+    dialog.run_sweep()
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=10)
+    xs, _ = dialog.measured.getData()
+    assert xs is not None and len(xs) > 100 and "dashed" in dialog.info.text()
+    assert window.messages[-1][0] == "warning" and "photodiode" in window.messages[-1][2]
+    assert dialog.new_fit is None and model.laser.fit is None
+    dialog.close()
+
+
+def test_quitting_over_unsaved_editor_conditions_asks(window):
+    window.new_stim_config()
+    editor = window._config_editor
+    window.new_stim_config()
+    assert window._config_editor is editor             # brought forward, its work kept
+    editor.add_condition_at(2.0, -2.0)
+    asked = []
+    window.ask = lambda title, text: asked.append(text) or False
+    window.dialogs_enabled = True
+    try:
+        window.close()
+    finally:
+        window.dialogs_enabled = False
+    assert window.isVisible() and "unsaved conditions" in asked[0]
+    editor._unsaved = False
+    editor.close()
+
+
+def test_a_hand_edited_settings_file_is_flagged_for_a_restart(app, data_dir, tmp_path, monkeypatch):
+    import shutil
+
+    import yaml
+    path = tmp_path / "zapitSystemSettings.yml"
+    shutil.copyfile(data_dir / "settings_test.yml", path)
+    monkeypatch.setenv("ZAPIT_SETTINGS", str(tmp_path))
+    model = Zapit(simulated=True)
+    win = MainWindow(model)
+    win.dialogs_enabled = False
+    win.show()
+    try:
+        assert not win.settings_warning.isVisible()
+        raw = yaml.safe_load(path.read_text())
+        raw["scanners"]["voltsPerPixel"] = 0.0123
+        path.write_text(yaml.safe_dump(raw))
+        win.scanner_panel.power.setValue(win.scanner_panel.power.value() + 5)
+        process_events(50)
+        assert win.settings_warning.isVisible() and "restart" in win.settings_warning.text()
+        assert "scanners.voltsPerPixel" in win.settings_warning.text()
+        assert yaml.safe_load(path.read_text())["scanners"]["voltsPerPixel"] == 0.0123
+    finally:
+        win.shutdown()
+        win.close()
+        model.close()
+
+
 def test_every_control_says_what_it_does(window):
     from PyQt6.QtWidgets import (QAbstractButton, QAbstractSlider, QAbstractSpinBox, QComboBox, QDialogButtonBox,
                                  QLineEdit, QScrollBar)
@@ -407,6 +467,7 @@ def test_help_menu_items_work(window, monkeypatch):
     assert "Ctrl+click" in window.help_shown[1]
     actions["About Zapit..."].trigger()
     assert str(window.model.settings_path) in window.help_shown[1]
+    assert "<td>Server: " not in window.help_shown[1]          # the row is named Server already
     actions["Open settings folder"].trigger()
     assert Path(opened[-1]) == window.model.settings_path.parent
     repo = Path(__file__).parents[1]

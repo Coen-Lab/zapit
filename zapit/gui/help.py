@@ -28,9 +28,9 @@ DOCS = (
 )
 
 QUICK_START = """\
-<p><b>Once per rig:</b> wire the DAQ (Help, Hardware and wiring) and set the rig's values in the settings
-file (Help, Open settings folder). For a non-linear laser, run File, Laser calibration with a photodiode on
-AI0 and press Save and use fit.</p>
+<p><b>Once per rig:</b> wire the DAQ (Help, Hardware and wiring), set the rig's values in the settings
+file (Help, Open settings folder) and restart Zapit to use them. For a non-linear laser, run File, Laser
+calibration with a photodiode on AI0 and press Save and use fit.</p>
 <p><b>Each session:</b></p>
 <ol>
 <li><b>Calibrate scanners</b> tab: set a camera ROI if needed, then <b>Run calibration</b>. The laser fires
@@ -90,7 +90,7 @@ def build_help_menu(window, menu: QMenu):
     menu.addSeparator()
     window._add_action(menu, "Open settings folder", lambda: open_settings_folder(window),
                        tip=f"Open {window.model.settings_path.parent}, which holds the settings file and the "
-                           f"laser fit")
+                           f"laser fit. Edits to the settings file take effect when Zapit restarts")
     window._add_action(menu, "Zapit on GitHub", lambda: webbrowser.open(REPO_URL), tip=REPO_URL)
     menu.addSeparator()
     window._add_action(menu, "About Zapit...", lambda: show_text(window, "About Zapit", about(window)),
@@ -98,7 +98,9 @@ def build_help_menu(window, menu: QMenu):
 
 
 def server_text(window) -> str:
-    return f"listening on {window.server.bind}" if window.server is not None else window.server_label.text()
+    if window.server is not None:
+        return f"listening on {window.server.bind}"
+    return window.server_label.text().removeprefix("Server: ")
 
 
 def quick_start(window) -> str:

@@ -159,6 +159,10 @@ def migrate_settings(src: Path, dst: Path, *, force: bool = False, dry_run: bool
         fit = convert_laser_fit(mat)
         report.append(f"laser fit: {mat} refitted as {fit.fit_type} (RMSE {fit.rmse:.4g}) -> "
                       f"{settings_mod.laser_fit_path(dst_file)}")
+        problem = fit.problem()
+        if problem:
+            report.append(f"  WARNING: {problem}; power may be mapped wrongly. Run a new laser sweep in Zapit "
+                          f"(File, Laser calibration)")
     else:
         report.append("laser fit: none found (the app will use a linear map until you calibrate the laser)")
 

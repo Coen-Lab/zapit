@@ -29,7 +29,7 @@ from zapit.events import Signal
 from zapit.hardware import make_camera, make_daq
 from zapit.hardware.camera import SimulatedCamera
 from zapit.hardware.daq import SimulatedDAQ
-from zapit.laser import LaserCalibration, LaserFit
+from zapit.laser import LaserCalibration, LaserFit, LaserFitRefused
 from zapit.stim_config import StimConfig, StimConfigError
 from zapit.transforms import ScannerMapping, Similarity, rotate_and_scale
 
@@ -76,6 +76,7 @@ class Zapit:
         self._settings_read_only = settings_path is not None
         # A rig must not stimulate on the placeholder laser range and scales; simulation may.
         self.settings_unedited = not simulated and settings_mod.is_unedited_default(self.settings)
+        self.settings_edited_outside: list[str] = []   # keys changed in the file by hand since start-up
 
         # Observable state
         self.on_state = Signal("state")
@@ -198,15 +199,20 @@ class Zapit:
             self._state = value
             self.on_state.emit(value)
 
-    def save_settings(self):
+    def update_setting(self, section: str, key: str, value):
+        """Set one key, in use now and in the settings file. Only that key is written: the file is read again
+        first, so a hand edit made while Zapit runs is kept there; it takes effect at the next start, and
+        ``settings_edited_outside`` names the keys that differ until then."""
+        self.settings[section][key] = value
         if self._settings_read_only:
             return
-        settings_mod.save_settings(self.settings, self.settings_path)
+        on_disk = settings_mod.write_setting(self.settings_path, section, key, value, self.settings)
+        edited = settings_mod.differing_keys(on_disk, self.settings) if on_disk is not None else []
+        if edited and edited != self.settings_edited_outside:
+            print(f"WARNING: {self.settings_path} was edited while Zapit runs ({', '.join(edited)}); the edits "
+                  f"are kept and take effect when Zapit restarts")
+        self.settings_edited_outside = edited
         self.on_settings.emit(self.settings)
-
-    def update_setting(self, section: str, key: str, value):
-        self.settings[section][key] = value
-        self.save_settings()
 
     @property
     def image_size(self) -> tuple[int, int]:
@@ -312,14 +318,12 @@ class Zapit:
     def set_cam_roi(self, roi):
         self.cam.roi = tuple(int(round(v)) for v in roi)
         self.wipe_scanner_calib()
-        self.settings["cache"]["ROI"] = [int(v) for v in self.cam.roi]
-        self.save_settings()
+        self.update_setting("cache", "ROI", [int(v) for v in self.cam.roi])
 
     def reset_cam_roi(self):
         self.cam.reset_roi()
         self.wipe_scanner_calib()
-        self.settings["cache"]["ROI"] = None
-        self.save_settings()
+        self.update_setting("cache", "ROI", None)
 
     # ================================================================== frames
     def last_frame(self) -> np.ndarray | None:
@@ -538,8 +542,7 @@ class Zapit:
         path = str(Path(cfg.path).resolve())
         recent = [r for r in (self.settings["cache"]["previouslyLoadedFiles"] or []) if r.get("path") != path]
         recent.insert(0, {"path": path, "time": _dt.datetime.now().isoformat(timespec="seconds")})
-        self.settings["cache"]["previouslyLoadedFiles"] = recent[:10]
-        self.save_settings()
+        self.update_setting("cache", "previouslyLoadedFiles", recent[:10])
 
     def recent_configs(self) -> list[Path]:
         return [Path(r["path"]) for r in (self.settings["cache"]["previouslyLoadedFiles"] or [])
@@ -778,8 +781,10 @@ class Zapit:
         """Sweep the control voltage, read the photodiode on AI0 and fit the response.
 
         The fit is returned, not applied: ``save_laser_fit`` saves it and puts it in use. Returns None when
-        cancelled with ``abort_laser_sweep = True`` (checked at every step). Raises ValueError when the
-        reading does not rise with the control voltage, which no laser does (a photodiode out of the beam).
+        cancelled with ``abort_laser_sweep = True`` (checked at every step). Raises ``LaserFitRefused``
+        (a ValueError carrying the refused ``fit``) when the reading does not rise steadily with the control
+        voltage, which no laser does (a photodiode out of the beam), and NotReadyError when a client arms
+        a trial mid-sweep (the trial keeps the lines).
         """
         # Cleared on entry, before any wait, so a cancel pressed straight after starting is kept.
         self.abort_laser_sweep = False
@@ -799,14 +804,20 @@ class Zapit:
                     if not self.simulated:
                         time.sleep(0.025)
                 sensor[i] = np.mean(reads)
+        except NotReadyError as e:
+            raise NotReadyError("A Bonsai or Python client armed a trial during the laser sweep, so the sweep "
+                                "stopped; the fit in use is unchanged") from e
         finally:
-            self.set_laser_control_volts(0)
+            try:
+                self.set_laser_control_volts(0)
+            except NotReadyError:
+                pass   # a trial took the lines, and zeroed them as it armed
         fit = LaserFit.fit(vals, sensor)
         print(f"Laser fit: {fit.fit_type}, RMSE {fit.rmse:.4g}")
         problem = fit.problem()
         if problem:
-            raise ValueError(f"{problem}. Is the photodiode in the beam and connected to AI0? The fit in use "
-                             f"is unchanged")
+            raise LaserFitRefused(f"{problem}. Is the photodiode in the beam and connected to AI0? The fit in "
+                                  f"use is unchanged", fit)
         return fit
 
     def save_laser_fit(self, fit: LaserFit):
@@ -819,6 +830,10 @@ class Zapit:
         if p.exists():
             self.laser.fit = LaserFit.load(p)
             print(f"Loaded laser fit from {p}")
+            problem = self.laser.fit.problem()
+            if problem:   # used as before, but worth a new sweep: power is read off this curve
+                print(f"WARNING: the laser fit in use may map power wrongly: {problem}. Run a new sweep "
+                      f"(File, Laser calibration)")
             return
         unconverted = p.with_suffix(".mat")
         if unconverted.exists():

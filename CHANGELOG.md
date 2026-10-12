@@ -62,7 +62,12 @@ Python rewrite by the Coen Lab (UCL).
     trial is refused. A laser or beam left on from the GUI is set to 0 V before a trial arms.
   * The laser calibration sweep can be cancelled and locks the rest of the window while it runs;
     its fit is used only once saved, and a sweep whose reading does not rise with the control
-    voltage is refused.
+    voltage is refused, with its readings plotted. The fit is a cubic or a sigmoid when one follows
+    the readings to within their noise, otherwise a smoothed monotone curve through them, so a laser
+    with a lasing threshold or one that saturates gets the right power at the low end.
+  * The GUI writes only the setting it changed into the settings file, so a hand edit made while
+    Zapit runs is kept; the status strip asks for a restart to use it.
+  * The stim config editor asks before closing, loading over or quitting with unsaved conditions.
   * CLI: `zapit gui`, `zapit server`, `zapit pattern`, `zapit check-config`.
 
 ### 2026/08/16 v1.0.4

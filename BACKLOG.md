@@ -59,3 +59,14 @@
 - `_unwritable` says "the trials log" for an `OSError` without a filename: that is a full disk, and its error text says so.
 - `prepare_laser_sweep` returns a refusal text or None: clear, and tested.
 - A long refusal is clipped in the status bar: it never widens the window, and at 1400 px the remedy is visible.
+
+## Audit 2026-10-12 (seventh, on 671f22a): not recommended (steelman holds)
+
+- The menus stay live during a laser sweep: none of them writes the AO lines, and Quit cancels the sweep first.
+- The sweep lock lifts only from the worker's done or failed slot: `Worker` reports every exception through `failed`.
+- `open_laser_dialog` deletes a hidden old dialog: a dialog cannot be hidden while it sweeps (Esc and Close are refused).
+- Quitting asks about an unsaved fit in the main window, not through the dialog's `may_leave`: one question, then the app exits with the dialog.
+- Tooltips repeat facts kept elsewhere (25 mV steps, file names, settings keys): the CLAUDE.md rule keeps them in step; tying the strings to constants would make them harder to read.
+- The Help boxes are 400 px wide `QMessageBox`es: readable with real fonts, and they stay open beside the window.
+- Documentation links open `main` on GitHub, not the installed version: the repo is public and the docs change with the code.
+- The 30 s wait for a sweep on quit: a sweep step lasts about 0.1 s, so the wait ends within one step.

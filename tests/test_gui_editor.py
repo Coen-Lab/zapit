@@ -28,7 +28,32 @@ def qapp():
 def editor(qapp):
     ed = StimConfigEditor(default_settings())
     yield ed
+    ed._unsaved = False   # close without the unsaved-conditions question
     ed.close()
+
+
+def test_closing_or_loading_over_unsaved_conditions_asks(editor, tmp_path, monkeypatch):
+    asked = []
+    answer = [False]
+    monkeypatch.setattr(StimConfigEditor, "_confirm", lambda self, title, text: asked.append(text) or answer[0])
+    monkeypatch.setattr("zapit.gui.config_editor.QFileDialog.getOpenFileName", lambda *a, **k: ("", ""))
+    editor.show()
+    editor.close()
+    assert not asked and not editor.isVisible()        # nothing to lose
+    editor.show()
+    editor.add_condition_at(2.0, -2.0)
+    editor.close()
+    assert editor.isVisible() and "not been saved" in asked[-1]
+    editor.load_dialog()
+    assert "Discard" in asked[-1]
+    editor.save_to(tmp_path / "c.yml")
+    editor.close()
+    assert not editor.isVisible() and len(asked) == 2
+    editor.show()
+    editor.power_spin.setValue(editor.power_spin.value() + 1)
+    answer[0] = True
+    editor.close()
+    assert not editor.isVisible() and len(asked) == 3
 
 
 def test_defaults_from_settings(editor):

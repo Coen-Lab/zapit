@@ -16,7 +16,8 @@ value shown. Modulation frequency is one value for the whole file.
 
 Saving from the Save or Save As button asks first (default No) when any point
 lies outside the brain, naming the conditions concerned. Load failures of any
-kind are shown in a dialog and leave the editor as it was.
+kind are shown in a dialog and leave the editor as it was. Closing the window
+or loading another file over unsaved changes asks first.
 """
 from __future__ import annotations
 
@@ -92,6 +93,7 @@ class StimConfigEditor(QMainWindow):
         self._conditions: list[Condition] = []
         self._path: Path | None = None
         self._cursor: tuple[float, float] | None = None
+        self._unsaved = False   # conditions changed since the last load, save or New
         self._build_ui()
         self._update_label()
         if path is not None:
@@ -131,11 +133,12 @@ class StimConfigEditor(QMainWindow):
         for b in (self.new_button, self.load_button, self.save_button, self.save_as_button, self.pattern_button):
             buttons.addWidget(b)
         self.new_button.setToolTip("Wipe every condition and start over (asks first).")
-        self.load_button.setToolTip("Load a stim config file to edit.")
+        self.load_button.setToolTip("Load a stim config file to edit (asks first if there are unsaved changes).")
         self.save_button.setToolTip("Save to the file being edited, or ask for one. Asks first if a point is "
-                                    "outside the brain. A saved config is loaded into Zapit.")
+                                    "outside the brain. A saved config is loaded into Zapit, unless a trial "
+                                    "is running.")
         self.save_as_button.setToolTip("Save to a new file. Asks first if a point is outside the brain. A saved "
-                                       "config is loaded into Zapit.")
+                                       "config is loaded into Zapit, unless a trial is running.")
         self.pattern_button.setToolTip("Append a grid, cross or line of conditions around a centre point.")
         self.new_button.clicked.connect(self.new_config)
         self.load_button.clicked.connect(self.load_dialog)
@@ -178,6 +181,7 @@ class StimConfigEditor(QMainWindow):
         form.addRow("Rampdown (ms)", self.ramp_spin)
         self.power_spin.valueChanged.connect(self._apply_power)
         self.ramp_spin.valueChanged.connect(self._apply_ramp)
+        self.freq_spin.valueChanged.connect(lambda _v: self._mark_unsaved())
 
         self.bottom_label = QLabel()
         self.bottom_label.setToolTip("The file being edited and how many conditions it has")
@@ -201,6 +205,19 @@ class StimConfigEditor(QMainWindow):
     def path(self) -> Path | None:
         return self._path
 
+    @property
+    def unsaved(self) -> bool:
+        """Conditions that a close would lose."""
+        return self._unsaved and bool(self._conditions)
+
+    def _mark_unsaved(self) -> None:
+        if self._conditions:
+            self._unsaved = True
+
+    def _edited(self) -> None:
+        self._unsaved = True
+        self._redraw()
+
     def to_stim_config(self) -> StimConfig:
         return StimConfig(list(self._conditions), float(self.freq_spin.value()), self._path)
 
@@ -223,7 +240,7 @@ class StimConfigEditor(QMainWindow):
         cond = Condition.from_points(pts, self.power_spin.value(), self.ramp_spin.value(),
                                      bilateral=self.bilateral)
         self._conditions.append(cond)
-        self._redraw()
+        self._edited()
         return cond
 
     def append_point_at(self, ml: float, ap: float) -> Condition | None:
@@ -236,7 +253,7 @@ class StimConfigEditor(QMainWindow):
         cond.ml = np.append(cond.ml, round(float(ml), 2))
         cond.ap = np.append(cond.ap, round(float(ap), 2))
         cond.type = "unilateral_points"
-        self._redraw()
+        self._edited()
         return cond
 
     def delete_nearest(self, ml: float, ap: float) -> int | None:
@@ -244,14 +261,14 @@ class StimConfigEditor(QMainWindow):
         idx = self.nearest_condition(ml, ap)
         if idx is not None:
             del self._conditions[idx]
-            self._redraw()
+            self._edited()
         return idx
 
     def add_pattern(self, centre, pattern: str = "grid", size=2.0, n_points=3, bilateral: bool = False) -> list[Condition]:
         new = pattern_conditions(centre, pattern, size, n_points, self.power_spin.value(),
                                  self.ramp_spin.value(), bilateral)
         self._conditions.extend(new)
-        self._redraw()
+        self._edited()
         return new
 
     def clear(self) -> None:
@@ -259,17 +276,20 @@ class StimConfigEditor(QMainWindow):
         self._path = None
         self.power_spin.setEnabled(True)
         self.ramp_spin.setEnabled(True)
+        self._unsaved = False
         self._redraw()
 
     def _apply_power(self, value: float) -> None:
         if self.power_spin.isEnabled():
             for c in self._conditions:
                 c.laser_power_mw = float(value)
+            self._mark_unsaved()
 
     def _apply_ramp(self, value: float) -> None:
         if self.ramp_spin.isEnabled():
             for c in self._conditions:
                 c.rampdown_ms = float(value)
+            self._mark_unsaved()
 
     # ------------------------------------------------------------------ files
     def load_path(self, path: str | Path) -> StimConfig:
@@ -279,12 +299,13 @@ class StimConfigEditor(QMainWindow):
         self._path = Path(path)
         powers = {c.laser_power_mw for c in cfg.conditions}
         ramps = {c.rampdown_ms for c in cfg.conditions}
-        with QSignalBlocker(self.power_spin), QSignalBlocker(self.ramp_spin):
+        with QSignalBlocker(self.power_spin), QSignalBlocker(self.ramp_spin), QSignalBlocker(self.freq_spin):
             self.freq_spin.setValue(cfg.modulation_hz)
             self.power_spin.setValue(cfg.conditions[0].laser_power_mw)
             self.ramp_spin.setValue(cfg.conditions[0].rampdown_ms)
             self.power_spin.setEnabled(len(powers) == 1)
             self.ramp_spin.setEnabled(len(ramps) == 1)
+        self._unsaved = False
         self._redraw()
         if len(powers) > 1 or len(ramps) > 1:
             lines = ["This config has values that differ between conditions:"]
@@ -327,6 +348,7 @@ class StimConfigEditor(QMainWindow):
         cfg = self.to_stim_config()
         path = cfg.save(path)
         self._path = path
+        self._unsaved = False
         self._update_label()
         if self.on_saved is not None:
             self.on_saved(path)
@@ -338,6 +360,9 @@ class StimConfigEditor(QMainWindow):
         self.clear()
 
     def load_dialog(self) -> None:
+        if self.unsaved and not self._confirm("Unsaved conditions", "Discard the unsaved conditions and load "
+                                                                    "another file?"):
+            return
         start = str(self._path.parent) if self._path else ""
         name, _ = QFileDialog.getOpenFileName(self, "Load stim config", start, "YAML (*.yml *.yaml)")
         if name:
@@ -376,6 +401,13 @@ class StimConfigEditor(QMainWindow):
         dlg = PatternDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.add_pattern(**dlg.values())
+
+    def closeEvent(self, event) -> None:
+        if self.unsaved and not self._confirm("Unsaved conditions", "The conditions have not been saved. Close "
+                                                                    "the editor and discard them?"):
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def _confirm(self, title: str, text: str) -> bool:
         yes, no = QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No

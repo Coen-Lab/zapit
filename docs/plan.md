@@ -54,7 +54,7 @@ Everything was built and tested against the simulated backends. These need a rig
 5. The Bonsai workflow: validated structurally and against the package metadata, not yet opened in the Bonsai editor.
 6. `scripts/migrate_rig.py` on a real older `laserFit.mat` (tested on a synthetic one).
 7. That the AO lines hold their last value when the on-demand task closes and a clocked task is created and waits for its trigger (NI's idle output behaviour), which is why a laser set on demand is zeroed before a trial arms; and that the zero write and the task change put no glitch on the laser line.
-8. The laser sweep's refusal thresholds (`zapit.laser.MAX_RMSE_FRACTION`, `MAX_DIP_FRACTION`) against a real photodiode curve.
+8. The laser sweep's refusal thresholds (`zapit.laser.MAX_RMSE_FRACTION`, `MAX_DIP_FRACTION`) and its choice between a formula and the monotone curve (`FORMULA_NOISE_FACTOR`, `SMOOTH_POINTS`) against a real photodiode curve; tested on simulated threshold, saturating, sigmoid and noise-only curves.
 
 ## How to test on a rig, in order
 
