@@ -16,6 +16,7 @@ The app itself reads only the current formats; this script is the only place tha
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import os
 import shutil
 import sys
@@ -86,7 +87,7 @@ def convert_settings(raw: dict) -> tuple[dict, list[str]]:
             for r in recent:
                 if isinstance(r, (list, tuple)) and r and isinstance(r[0], str):
                     converted.append({"path": str(Path(r[0]).resolve()),
-                                      "time": str(r[1]) if len(r) > 1 else ""})
+                                      "time": _datenum_to_iso(r[1]) if len(r) > 1 else ""})
                 elif isinstance(r, dict) and isinstance(r.get("path"), str):
                     converted.append(r)
             cache["previouslyLoadedFiles"] = converted or None
@@ -97,6 +98,15 @@ def convert_settings(raw: dict) -> tuple[dict, list[str]]:
             notes.append(f"{sec}.{key} dropped (no longer used)")
     out, _ = settings_mod.validate(raw)
     return out, notes
+
+
+def _datenum_to_iso(value) -> str:
+    """1.x stamped recent configs with MATLAB's ``now``: local time in days since year 0 (719529 is 1970-01-01)."""
+    try:
+        days = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return (_dt.datetime(1970, 1, 1) + _dt.timedelta(days=days - 719529)).isoformat(timespec="seconds")
 
 
 def convert_laser_fit(mat_path: Path) -> LaserFit:
@@ -218,7 +228,12 @@ def main(argv=None) -> int:
         return 1
     print("\n".join(report))
     if not a.dry_run:
-        print(f"Done. Check {dst / settings_mod.SETTINGS_FILENAME}, then delete or archive {src}.")
+        if src.resolve() == dst.resolve():
+            # Converted in place: src now holds the new files, so it must not be deleted.
+            print(f"Done. Check {dst / settings_mod.SETTINGS_FILENAME}. The 1.x originals are kept beside it as "
+                  f"{settings_mod.SETTINGS_FILENAME}.bak and laserFit.mat.converted (if there was one).")
+        else:
+            print(f"Done. Check {dst / settings_mod.SETTINGS_FILENAME}, then delete or archive {src}.")
     return 0
 
 

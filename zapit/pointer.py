@@ -57,6 +57,16 @@ class NotReadyError(RuntimeError):
     pass
 
 
+def _append_trial_row(trials: Path, row: list, event: str):
+    """One timestamped row of a trials CSV, with the header if the file is new."""
+    new = not trials.exists()
+    with open(trials, "a", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        if new:
+            w.writerow(TRIALS_HEADER)
+        w.writerow([_dt.datetime.now().isoformat(sep=" ", timespec="milliseconds"), *row, event])
+
+
 class Zapit:
     def __init__(self, simulated: bool = False, settings_path: str | Path | None = None,
                  start_camera: bool = True):
@@ -82,8 +92,8 @@ class Zapit:
         self.stim_config: StimConfig | None = None
         self.experiment_path: Path | None = None
         self._log_files: tuple[Path, Path] | None = None   # (parameter log, trials csv) of this session
-        self._logged_trial_id: int | None = None   # the trial the last trials-CSV row belongs to
-        self._last_log_row: list = []
+        # (trial id, trials csv, row) of the last logged trial, so its disarm row follows it to that file
+        self._logged_trial: tuple[int, Path, list] | None = None
         self.last_condition: int = 0
         self.transform: Similarity | None = None
         self.scanners_calibrated = False
@@ -153,6 +163,16 @@ class Zapit:
             if self._state == "stim" and self.daq.ao_mode() == "finite" and self.daq.is_ao_done():
                 self.state = "idle"
             return self._state
+
+    def poll_state(self) -> str:
+        """The state for a frequent GUI poll: never waits for the lock (a ramp-down holds it for the ramp's
+        length), so while the model is busy it reports the last state and leaves the finite-done check."""
+        if not self.lock.acquire(blocking=False):
+            return self._state
+        try:
+            return self.state
+        finally:
+            self.lock.release()
 
     @property
     def trial_active(self) -> bool:
@@ -626,12 +646,12 @@ class Zapit:
             self._trial_id += 1
             self.state = "stim"
             # Logged once the DAQ has accepted the trial, so a refused trial leaves no row.
-            self._logged_trial_id = None
+            self._logged_trial = None
             if logging and self.experiment_path and self.experiment_path.is_dir():
-                self._log_trial([condition, f"{avg_mw:.2f}", int(hardware_triggered),
-                                 f"{stim_duration_s:.2f}", int(laser_on), int(capped)],
-                                "armed" if hardware_triggered else "started")
-                self._logged_trial_id = self._trial_id
+                row = [condition, f"{avg_mw:.2f}", int(hardware_triggered), f"{stim_duration_s:.2f}",
+                       int(laser_on), int(capped)]
+                trials = self._log_trial(row, "armed" if hardware_triggered else "started")
+                self._logged_trial = (self._trial_id, trials, row)
         return TrialResult(condition, laser_on, avg_mw, bool(hardware_triggered),
                            float(stim_duration_s) if finite else -1.0, waves)
 
@@ -654,8 +674,11 @@ class Zapit:
                 # Nothing has played, and a ramp-down written into a task waiting for its trigger
                 # would wait for buffer space that never frees.
                 self._stop_and_zero()
-                if self._logged_trial_id == self._trial_id:
-                    self._log_trial(self._last_log_row, "disarmed")
+                if self._logged_trial is not None and self._logged_trial[0] == self._trial_id:
+                    # Beside its armed row, wherever the experiment path points now; once only.
+                    _, trials, row = self._logged_trial
+                    self._logged_trial = None
+                    _append_trial_row(trials, row, "disarmed")
                 print("Disarmed a trial that had not been triggered")
                 return
             if mode == "finite":
@@ -682,27 +705,22 @@ class Zapit:
         """Stop the clocked task and set laser 0 V, scanners 0 V: a stopped AO task holds its last sample."""
         self.daq.stop()
         self.daq.clear_do()
+        self._pattern_running = False   # a stop also ends a check pattern it ramped down
         self._last_xy_volts = np.zeros(2)
         self._last_laser_volts = 0.0
         self.daq.write_unclocked([0.0, 0.0, 0.0, 0.0])
         self.state = "idle"
 
-    def _log_trial(self, row: list, event: str):
+    def _log_trial(self, row: list, event: str) -> Path:
         """Append ``row`` (condition, power, hardware_triggered, duration, laser_on, power_capped) with a
-        timestamp and ``event`` to the trials CSV. One parameter log and one trials CSV per (experiment
-        path, config) for this session."""
+        timestamp and ``event`` to the trials CSV, and return that CSV. One parameter log and one trials
+        CSV per (experiment path, config) for this session."""
         if self._log_files is None or self._log_files[0].parent != self.experiment_path:
             log = self.stim_config.log_parameters(self.experiment_path, {"hostname": socket.gethostname()})
             print(f"Wrote stimulus parameter log {log}")
             self._log_files = (log, log.with_name(log.name.replace("_log_", "_trials_")).with_suffix(".csv"))
-        trials = self._log_files[1]
-        new = not trials.exists()
-        with open(trials, "a", newline="", encoding="utf-8") as fh:
-            w = csv.writer(fh)
-            if new:
-                w.writerow(TRIALS_HEADER)
-            w.writerow([_dt.datetime.now().isoformat(sep=" ", timespec="milliseconds"), *row, event])
-        self._last_log_row = list(row)
+        _append_trial_row(self._log_files[1], row, event)
+        return self._log_files[1]
 
     # ================================================================== laser calibration
     def generate_laser_calibration_curve(self, min_max_volts=None, step: float = 0.025, n_reads: int | None = None) -> LaserFit:

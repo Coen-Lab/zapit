@@ -127,6 +127,9 @@ class SimulatedDAQ(DAQ):
         if v.shape != (N_AO,):
             raise ValueError("Unclocked write needs 4 values")
         self.check_range(v)
+        # As on NI, where the on-demand task takes the AO lines: any clocked task is deleted.
+        if self._mode is not None:
+            self.clear_ao()
         self.last_unclocked = v.copy()
 
     def read_analog(self, channel: int = 0) -> float:

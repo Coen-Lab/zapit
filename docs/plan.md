@@ -39,8 +39,9 @@ The model is free of Qt. It emits plain callbacks (`zapit.events.Signal`) which 
 - After a continuous stimulus ramps down, the task is stopped and the laser and scanners are set to 0 V with an on-demand write, because a stopped AO task holds its last sample. The delayed stop is tied to its trial, so it never stops a trial armed during the ramp-down.
 - The laser waveform is never allowed above `laser.laserMinMaxControlVolts[1]`; the ephys half-sine is scaled down if needed.
 - A scanner calibration whose mean residual exceeds 100 um is rejected (usually a mirrored view needing an invert flag).
-- Trials are logged only after the DAQ accepts them, one parameter log and trials file per experiment folder and config. A trial disarmed before its TTL gets a `disarmed` row, and a trial whose power the laser maximum limited is flagged `power_capped`.
-- The model state is read and written under the model lock, so a GUI poll cannot report a newly armed trial as idle and unlock the beam controls over it.
+- Trials are logged only after the DAQ accepts them, one parameter log and trials file per experiment folder and config. A trial disarmed before its TTL gets a `disarmed` row beside its `armed` row, even if the experiment path changed in between, and a trial whose power the laser maximum limited is flagged `power_capped`.
+- The model state is read and written under the model lock, so a GUI poll cannot report a newly armed trial as idle and unlock the beam controls over it. The GUI's frame-timer poll (`Zapit.poll_state`) never waits for that lock: while a ramp-down holds it, the poll reports the last state, so the camera view does not freeze for the ramp.
+- A `stop` that ramps down a check pattern also ends it, so the next trial is not refused as "pattern running".
 
 ## Not verified on hardware
 

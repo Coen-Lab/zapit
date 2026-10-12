@@ -24,10 +24,19 @@ def test_settings_and_laser_fit_convert(data_dir, tmp_path):
     assert out["camera"]["connectionIndex"] == 0               # 1-based 1 -> 0-based 0
     assert out["server"]["enable"] is True                     # the old TCP switch (off) does not turn Bonsai's server off
     assert [r["path"] for r in out["cache"]["previouslyLoadedFiles"]][0].endswith("a.yml")
+    assert out["cache"]["previouslyLoadedFiles"][0]["time"] == "2023-04-23T12:00:00"   # MATLAB datenum 739000.5
     fit = LaserFit.load(dst / "laserFit.yml")
     assert fit.fit_type == "sigmoid"
     assert any("laser fit" in line for line in report)
     s.load_settings(dst / s.SETTINGS_FILENAME)                 # the app reads the result without complaint
+
+
+def test_in_place_migration_never_says_to_delete_its_folder(data_dir, tmp_path, capsys):
+    shutil.copytree(data_dir / "legacy_rig", tmp_path, dirs_exist_ok=True)
+    assert migrate_rig.main(["--from", str(tmp_path), "--to", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "delete" not in out and ".bak" in out
+    s.load_settings(tmp_path / s.SETTINGS_FILENAME)
 
 
 def test_old_remote_tcp_client_is_reported_not_opened():

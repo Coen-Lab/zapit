@@ -307,7 +307,7 @@ class MainWindow(QMainWindow):
     def _poll_state(self):
         """Reading the state lets the model notice a finished finite trial and emit "idle"."""
         try:
-            self.model.state
+            self.model.poll_state()
         except Exception as e:
             self.set_status(f"Could not read the state: {type(e).__name__}: {e}")
 
@@ -316,7 +316,9 @@ class MainWindow(QMainWindow):
         if state == "stim":
             text += self._trial_summary()
         self.state_label.setText(text)
-        self._apply_trial_lock(bool(self.model.trial_active))
+        # Zapit.trial_active from the emitted state: reading the model state here would wait for the lock,
+        # which a ramp-down holds while this slot runs.
+        self._apply_trial_lock(state in ("stim", "rampdown") and self.model.daq.has_clocked_task)
 
     def _trial_summary(self) -> str:
         """Condition and laser state of the trial that just started, from what the model holds."""

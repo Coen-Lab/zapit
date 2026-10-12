@@ -77,6 +77,39 @@ def test_state_poll_never_overwrites_a_newly_armed_trial(ready_model):
     assert ready_model.state == "stim" and ready_model.trial_active
 
 
+def test_state_poll_never_waits_for_a_busy_model(ready_model):
+    ready_model.send_samples(condition=1, hardware_triggered=False)
+    held, release = threading.Event(), threading.Event()
+
+    def hold():                                        # a ramp-down holds the lock for the ramp's length
+        with ready_model.lock:
+            held.set()
+            release.wait(5)
+    t = threading.Thread(target=hold)
+    t.start()
+    held.wait(2)
+    t0 = time.monotonic()
+    assert ready_model.poll_state() == "stim"
+    assert time.monotonic() - t0 < 0.1
+    release.set()
+    t.join()
+
+
+def test_stop_ends_a_check_pattern_it_ramps_down(ready_model):
+    ready_model.zap_all_coords()
+    ready_model.stop_opto_stim(0)
+    time.sleep(0.4)
+    assert ready_model.state == "idle"
+    ready_model.send_samples(condition=1, hardware_triggered=True)          # not refused as "pattern running"
+
+
+def test_on_demand_write_drops_the_clocked_task_as_on_ni(ready_model):
+    ready_model.send_samples(condition=1, stim_duration_s=0.05, hardware_triggered=False)
+    time.sleep(0.3)
+    ready_model.move_beam_mm([0, 0])
+    assert ready_model.daq.ao_mode() is None
+
+
 def test_stop_leaves_a_playing_finite_trial_alone(ready_model):
     _armed_finite(ready_model)
     ready_model.daq.simulate_trigger()
@@ -219,6 +252,32 @@ def test_disarmed_trial_is_marked_in_the_log(ready_model, tmp_path):
     assert events == [("3", "armed"), ("3", "disarmed"), ("2", "started")]
 
 
+def test_repeated_stops_add_no_disarmed_rows(ready_model, tmp_path):
+    ready_model.set_experiment_path(tmp_path)
+    ready_model.send_samples(condition=1, hardware_triggered=False)
+    ready_model.stop_opto_stim(0)
+    time.sleep(0.4)
+    ready_model.stop_opto_stim()                       # after a played trial's ramp-down
+    ready_model.send_samples(condition=2, hardware_triggered=True)
+    ready_model.stop_opto_stim()
+    ready_model.stop_opto_stim()                       # after a disarm
+    events = [(r.split(",")[1], r.split(",")[-1]) for r in _rows(next(tmp_path.glob("zapit_trials_*.csv")))]
+    assert events == [("1", "started"), ("2", "armed"), ("2", "disarmed")]
+
+
+@pytest.mark.parametrize("new_path", ["cleared", "changed"])
+def test_disarmed_row_follows_its_trial_when_the_path_changes(ready_model, tmp_path, new_path):
+    first, second = tmp_path / "first", tmp_path / "second"
+    ready_model.set_experiment_path(first)
+    ready_model.send_samples(condition=3, hardware_triggered=True)
+    ready_model.set_experiment_path(None if new_path == "cleared" else second)
+    ready_model.stop_opto_stim()                       # once raised TypeError, or wrote the row to `second`
+    assert ready_model.state == "idle"
+    events = [r.split(",")[-1] for r in _rows(next(first.glob("zapit_trials_*.csv")))]
+    assert events == ["armed", "disarmed"]
+    assert not second.exists() or not list(second.iterdir())
+
+
 def test_capped_power_is_flagged_in_the_log(ready_model, tmp_path):
     ready_model.set_experiment_path(tmp_path)
     for c in ready_model.stim_config.conditions:
@@ -261,11 +320,12 @@ def test_mirrored_view_calibration_is_rejected(data_dir, tmp_path):
         m.close()
 
 
-@pytest.mark.parametrize("flip", [False, True])
-def test_roi_drawn_around_the_beam_keeps_it_in_view(data_dir, tmp_path, flip):
+@pytest.mark.parametrize("flip_lr", [False, True])
+@pytest.mark.parametrize("flip_ud", [False, True])
+def test_roi_drawn_around_the_beam_keeps_it_in_view(data_dir, tmp_path, flip_lr, flip_ud):
     s = yaml.safe_load((data_dir / "settings_test.yml").read_text())
     s["cache"]["ROI"] = None
-    s["camera"]["flipImageLR"] = s["camera"]["flipImageUD"] = flip
+    s["camera"]["flipImageLR"], s["camera"]["flipImageUD"] = flip_lr, flip_ud
     p = tmp_path / "s.yml"
     p.write_text(yaml.safe_dump(s))
     m = Zapit(simulated=True, settings_path=p)

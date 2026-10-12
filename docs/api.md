@@ -52,6 +52,7 @@ r = z.send_samples(condition=3, laser_on=None,         # condition 3, random las
                    laser_power_mw=1.0, hardware_triggered=False)
 r.condition, r.laser_on, r.laser_power_mw, r.waveforms
 z.state                       # 'idle', 'stim', 'rampdown'; 'idle' again once a finite trial has played
+z.poll_state()                # the same, but never waits for the model lock (for GUI timers)
 z.trial_active                # True while a trial is armed, playing or ramping down
 z.stop_opto_stim()            # ramp down a continuous stimulus (config ramp-down, or pass ms);
                               # disarms a trial (finite or continuous) that was never triggered

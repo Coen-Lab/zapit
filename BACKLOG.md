@@ -18,3 +18,15 @@
 - The log file is written under the model lock, and the GUI infers a trial's laser state from the loaded waveform: milliseconds, and correct.
 - The window seemed to outgrow small screens during sample calibration: an offscreen-font artefact; with real fonts the minimum width is 622 px.
 - Invalid settings values are replaced by defaults with a console line and a backup: v1 behaviour; a whole 1.x file is now refused instead.
+
+## Audit 2026-10-12 (third, on 8c25947): not recommended (steelman holds)
+
+- A 1.x settings file stops start-up with a traceback: its last line is the full message naming the command, as for an old `laserFit.mat`.
+- `laser_power` in the trials CSV is the requested power even when capped: `power_capped` marks those rows, and it matches `mw_to_control`'s capping with and without a fit.
+- `on_state` is emitted while the model lock is held: a queued Qt signal from other threads, and a re-entrant lock on the GUI thread, so no deadlock.
+- `set_experiment_path` creates folders on a server request: the server binds localhost by default, and a client that can fire the laser can do more than make a folder.
+- A hand-edited current settings file holding a `tcpServer` section is refused as 1.x: the message names the converter, which handles it.
+- `roi_from_mm` does not snap to the camera's ROI increments: pylon snaps, and `roi_offset_mm` reads back the snapped ROI.
+- The migration searches this checkout's `SETTINGS` folder: that is 1.x's `getInstallPath` for a rig updated in place, and `--from` covers any other.
+- On NI, `has_started` may read 0 microseconds after a software start, so a stop at that instant disarms without a ramp: nothing meaningful has played.
+- No trials-CSV row when a continuous trial stops or a TTL arrives: 1.x logged only the arming, and Bonsai's reply log has the timing.

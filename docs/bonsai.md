@@ -168,7 +168,7 @@ With an explicit ramp:
 {"cmd": "stop", "rampdown_ms": 100}
 ```
 
-`stop` on an idle system or on a finished finite trial replies `{"state": "idle", "ok": true}`. `stop` on a trial that is armed but has not been triggered, finite or continuous, cancels it: the DAQ is disarmed, nothing plays, the outputs go to 0 V, a `disarmed` row is added to the trials log, and the reply is `{"state": "idle", "ok": true}`. `rampdown_ms` omitted or null uses the ramp from the last condition's config.
+`stop` on an idle system or on a finished finite trial replies `{"state": "idle", "ok": true}`. `stop` on a trial that is armed but has not been triggered, finite or continuous, cancels it: the DAQ is disarmed, nothing plays, the outputs go to 0 V, a `disarmed` row is added to the trials log beside that trial's `armed` row, and the reply is `{"state": "idle", "ok": true}`. `rampdown_ms` omitted or null uses the ramp from the last condition's config.
 
 ### load_config
 
