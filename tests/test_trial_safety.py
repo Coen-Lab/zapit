@@ -369,14 +369,16 @@ def test_a_trial_never_arms_over_a_laser_set_on_demand(ready_model, set_on_deman
     assert ready_model.daq.is_finite_playing() and not ready_model.daq.has_started()
 
 
-def test_a_vanished_experiment_folder_is_made_again_with_its_log(ready_model, tmp_path):
+def test_a_vanished_experiment_folder_is_made_again_with_its_log(ready_model, tmp_path, capsys):
     import shutil
     exp = tmp_path / "share" / "mouse1"
     ready_model.set_experiment_path(exp)
     ready_model.send_samples(condition=1, stim_duration_s=0.05, hardware_triggered=False)
     time.sleep(0.5)
+    assert "had gone" not in capsys.readouterr().out
     shutil.rmtree(tmp_path / "share")                  # the network share dropped and came back empty
     ready_model.send_samples(condition=2, stim_duration_s=1.0, hardware_triggered=True)
+    assert "WARNING: the experiment folder" in capsys.readouterr().out   # once only "Wrote stimulus parameter log"
     assert [r.split(",")[1] for r in _rows(next(exp.glob("zapit_trials_*.csv")))] == ["2"]
     assert len(list(exp.glob("zapit_log_*.yml"))) == 1   # the trials beside it are described again
 

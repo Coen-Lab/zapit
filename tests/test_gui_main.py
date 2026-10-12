@@ -265,7 +265,7 @@ def test_laser_sweep_stops_a_check_pattern_and_waits_out_a_trial(window):
     window.sample_panel.zap_all_btn.setChecked(True)
     assert model._pattern_running and window.pattern_running()
     dialog.run_sweep()
-    assert wait_until(lambda: dialog.run_btn.isEnabled(), timeout_s=10)
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=10)
     assert not window.sample_panel.zap_all_btn.isChecked() and not window.pattern_running()
     assert window.scanner_panel.laser_btn.text() == "Laser: Off"
     model.send_samples(condition=1, hardware_triggered=True, logging=False)   # not refused as "pattern running"
@@ -276,13 +276,17 @@ def test_laser_sweep_stops_a_check_pattern_and_waits_out_a_trial(window):
     dialog.close()
 
 
-def test_laser_sweep_holds_the_window_and_waits_for_a_scanner_calibration(window):
-    model = make_ready(window)
+def slow_sweep(model, step_s: float):
+    """Each sweep step takes ``step_s``, as on a rig (four reads 25 ms apart), so the sweep can be caught."""
+    read = model.daq.read_analog
+    model.daq.read_analog = lambda ch: (time.sleep(step_s), read(ch))[1]
+
+
+def test_laser_sweep_waits_for_a_scanner_calibration(window):
+    make_ready(window)
     window.open_laser_dialog()
     dialog = window._laser_dialog
-    # Window modal: once Zap all could start mid-sweep and leave the GUI showing a pattern nothing played.
-    assert dialog.windowModality() == Qt.WindowModality.WindowModal
-    model.scanners_calibrated = False
+    window.model.scanners_calibrated = False
     window.scanner_panel.run_btn.setChecked(True)
     assert window.scanner_panel.calibration_running()
     dialog.run_sweep()
@@ -291,8 +295,78 @@ def test_laser_sweep_holds_the_window_and_waits_for_a_scanner_calibration(window
     assert wait_until(lambda: not window.scanner_panel.calibration_running(), timeout_s=10)
     dialog.run_sweep()
     assert dialog.worker is not None
-    assert wait_until(lambda: dialog.run_btn.isEnabled(), timeout_s=10)
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=10)
     dialog.close()
+
+
+def test_laser_sweep_holds_the_window_however_the_dialog_is_left(window):
+    from PyQt6.QtTest import QTest
+    model = make_ready(window)
+    slow_sweep(model, 0.005)
+    window.open_laser_dialog()
+    dialog = window._laser_dialog
+    assert window.centralWidget().isEnabled()          # viewing a fit locks nothing
+    dialog.run_sweep()
+    assert dialog.sweeping and not window.centralWidget().isEnabled()
+    # Esc hides a dialog without a close event: once it freed the window mid-sweep, and Close did after 10 s.
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    dialog.close()
+    process_events(50)
+    assert dialog.isVisible() and dialog.sweeping and not window.centralWidget().isEnabled()
+    window.open_laser_dialog()
+    assert window._laser_dialog is dialog              # never a second sweep beside the first
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=20)
+    assert window.centralWidget().isEnabled()
+    assert dialog.new_fit is not None and model.laser.fit is None   # shown, not used
+    dialog.close()
+
+
+def test_a_laser_sweep_cancels_from_its_button(window):
+    model = make_ready(window)
+    slow_sweep(model, 0.01)
+    window.open_laser_dialog()
+    dialog = window._laser_dialog
+    dialog.run_sweep()
+    assert dialog.run_btn.text() == "Cancel sweep" and dialog.run_btn.isEnabled()
+    process_events(100)
+    dialog.run_btn.click()
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=10)
+    assert "cancelled" in dialog.info.text() and dialog.new_fit is None and model.daq.laser_volts == 0
+    assert window.centralWidget().isEnabled() and dialog.run_btn.text() == "Run sweep"
+    dialog.close()
+
+
+def test_closing_on_an_unsaved_fit_asks_and_saving_puts_it_in_use(window, monkeypatch):
+    model = make_ready(window)
+    window.open_laser_dialog()
+    dialog = window._laser_dialog
+    assert not dialog.save_btn.isEnabled()
+    dialog.run_sweep()
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=10)
+    asked = []
+    dialog.ask = lambda title, text: asked.append(text) or False   # the user keeps it
+    dialog.close()
+    assert dialog.isVisible() and dialog.new_fit is not None and "not been saved" in asked[0]
+    saved = []
+    monkeypatch.setattr(model, "save_laser_fit", lambda fit: (saved.append(fit), setattr(model.laser, "fit", fit)))
+    new = dialog.new_fit
+    dialog.save_btn.click()
+    assert saved == [new] and model.laser.fit is new and dialog.new_fit is None
+    dialog.close()
+    assert not dialog.isVisible() and len(asked) == 1  # nothing left to ask about
+
+
+def test_quitting_mid_sweep_cancels_it_before_the_hardware_closes(window):
+    model = make_ready(window)
+    slow_sweep(model, 0.02)                          # a 4 s sweep
+    window.open_laser_dialog()
+    dialog = window._laser_dialog
+    dialog.run_sweep()
+    process_events(100)
+    t0 = time.monotonic()
+    window.shutdown()                                # once the model closed under a running sweep and Qt aborted
+    assert not dialog.worker.isRunning() and time.monotonic() - t0 < 2
+    assert model.daq.laser_volts == 0
 
 
 def test_load_garbage_config_keeps_running(window, tmp_path, monkeypatch):

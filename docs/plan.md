@@ -41,7 +41,7 @@ The model is free of Qt. It emits plain callbacks (`zapit.events.Signal`) which 
 - A scanner calibration whose mean residual exceeds 100 um is rejected (usually a mirrored view needing an invert flag).
 - Trials are logged only after the DAQ accepts them, one parameter log and trials file per experiment folder and config. A trial the log cannot record (the trials CSV open in Excel, which locks it) is refused before the DAQ is armed, so a client's next TTL never fires an unrecorded trial. An experiment folder that has gone (a network share that dropped) is made again with a new parameter log, or the trial is refused. A trial disarmed before its TTL, by `stop` or by closing Zapit, gets a `disarmed` row beside its `armed` row, even if the experiment path changed in between; that row is written after the outputs are safe, so a failure to write it is a warning. A trial whose power the laser maximum limited is flagged `power_capped`.
 - The model state is read and written under the model lock, so a GUI poll cannot report a newly armed trial as idle and unlock the beam controls over it. The GUI's frame-timer poll (`Zapit.poll_state`) never waits for that lock: while a ramp-down holds it, the poll reports the last state, so the camera view does not freeze for the ramp.
-- A `stop` that ramps down a check pattern also ends it, and so does an on-demand beam or laser write (which takes the AO lines), so the next trial is not refused as "pattern running". The laser calibration sweep stops any pattern in the GUI first, is refused while a scanner calibration runs, is disabled during a trial, and its dialog is window modal so no other control writes the laser line mid-sweep.
+- A `stop` that ramps down a check pattern also ends it, and so does an on-demand beam or laser write (which takes the AO lines), so the next trial is not refused as "pattern running". The laser calibration sweep stops any pattern in the GUI first, is refused while a scanner calibration runs, is disabled during a trial, and locks the main window for the sweep's whole life (not the dialog's: Esc and Close are refused mid-sweep, Cancel sweep stops it, and quitting cancels it before the hardware closes), so no other control writes the laser line mid-sweep. Its fit is used only once saved.
 
 ## Not verified on hardware
 
@@ -53,6 +53,8 @@ Everything was built and tested against the simulated backends. These need a rig
 4. Camera orientation flags versus scanner inversion flags: a mirrored image needs `invertXscanner` or `invertYscanner`, because the similarity transform is non-reflective.
 5. The Bonsai workflow: validated structurally and against the package metadata, not yet opened in the Bonsai editor.
 6. `scripts/migrate_rig.py` on a real older `laserFit.mat` (tested on a synthetic one).
+7. That the AO lines hold their last value when the on-demand task closes and a clocked task is created and waits for its trigger (NI's idle output behaviour), which is why a laser set on demand is zeroed before a trial arms; and that the zero write and the task change put no glitch on the laser line.
+8. The laser sweep's refusal thresholds (`zapit.laser.MAX_RMSE_FRACTION`, `MAX_DIP_FRACTION`) against a real photodiode curve.
 
 ## How to test on a rig, in order
 
@@ -62,7 +64,8 @@ Everything was built and tested against the simulated backends. These need a rig
 4. Calibrate the sample, Overlay stim sites, Zap all coords.
 5. From Python: `ZapitClient().send_samples(condition=1, hardware_triggered=False)` then `stop()`; watch the laser and the masking LED on a scope, and confirm both read 0 V after the ramp.
 6. Hardware trigger: `send_samples(stim_duration_s=1)` then pulse PFI0. Then arm again, do not pulse, call `stop()` and confirm the next `send_samples` is accepted.
-7. Bonsai: open `bonsai/.bonsai/Zapit.bonsai`, fix any node the editor flags, press Space to arm and T to fire.
+7. Laser left on: in the GUI turn Point mode on (laser on) and click the image, then arm `send_samples(stim_duration_s=1)` from Python without pulsing. The scope must show the laser line at 0 V while the trial waits, and the trial must play when PFI0 is pulsed.
+8. Bonsai: open `bonsai/.bonsai/Zapit.bonsai`, fix any node the editor flags, press Space to arm and T to fire.
 
 ## Possible next steps
 

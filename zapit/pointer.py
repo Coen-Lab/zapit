@@ -101,6 +101,7 @@ class Zapit:
         self.ref_points_sample = np.zeros((2, 2))
         self.calibration_data: list[calib.SpotMeasurement] = []
         self.abort_calibration = False
+        self.abort_laser_sweep = False
         self.use_clocked_do = False
         self.atlas = load_atlas()
         self.lock = threading.RLock()
@@ -730,11 +731,14 @@ class Zapit:
         writable. One parameter log and one trials CSV per (experiment path, config) for this session.
         Raises NotReadyError naming the file when either cannot be written (Excel locks a CSV it has open).
         A folder that has gone (a network share that dropped) is made again, or the trial is refused."""
-        try:
-            self.experiment_path.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            raise NotReadyError(f"Trial not armed: the experiment folder {self.experiment_path} is missing and "
-                                f"cannot be made again ({e.strerror or e})") from e
+        if not self.experiment_path.is_dir():
+            try:
+                self.experiment_path.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                raise NotReadyError(f"Trial not armed: the experiment folder {self.experiment_path} is missing and "
+                                    f"cannot be made again ({e.strerror or e})") from e
+            print(f"WARNING: the experiment folder {self.experiment_path} had gone (a dropped network share?) and "
+                  f"was made again with a new parameter log; any trials logged there earlier this session are not in it")
         try:
             log = self._log_files[0] if self._log_files is not None else None
             if log is None or log.parent != self.experiment_path or not log.exists():
@@ -769,14 +773,25 @@ class Zapit:
             print(f"WARNING: the disarmed row could not be written to {trials}: {e}")
 
     # ================================================================== laser calibration
-    def generate_laser_calibration_curve(self, min_max_volts=None, step: float = 0.025, n_reads: int | None = None) -> LaserFit:
-        """Sweep the control voltage, read the photodiode on AI0 and fit the response."""
+    def generate_laser_calibration_curve(self, min_max_volts=None, step: float = 0.025,
+                                         n_reads: int | None = None) -> LaserFit | None:
+        """Sweep the control voltage, read the photodiode on AI0 and fit the response.
+
+        The fit is returned, not applied: ``save_laser_fit`` saves it and puts it in use. Returns None when
+        cancelled with ``abort_laser_sweep = True`` (checked at every step). Raises ValueError when the
+        reading does not rise with the control voltage, which no laser does (a photodiode out of the beam).
+        """
+        # Cleared on entry, before any wait, so a cancel pressed straight after starting is kept.
+        self.abort_laser_sweep = False
         lo, hi = min_max_volts or self.settings["laser"]["laserMinMaxControlVolts"]
         vals = np.arange(lo, hi + 1e-9, step)
         n_reads = (1 if self.simulated else 4) if n_reads is None else n_reads
         sensor = np.zeros_like(vals)
         try:
             for i, v in enumerate(vals):
+                if self.abort_laser_sweep:
+                    print("Laser sweep cancelled")
+                    return None
                 self.set_laser_control_volts(v)
                 reads = []
                 for _ in range(n_reads):
@@ -787,14 +802,17 @@ class Zapit:
         finally:
             self.set_laser_control_volts(0)
         fit = LaserFit.fit(vals, sensor)
-        self.laser.fit = fit
         print(f"Laser fit: {fit.fit_type}, RMSE {fit.rmse:.4g}")
+        problem = fit.problem()
+        if problem:
+            raise ValueError(f"{problem}. Is the photodiode in the beam and connected to AI0? The fit in use "
+                             f"is unchanged")
         return fit
 
-    def save_laser_fit(self):
-        if self.laser.fit is None:
-            raise RuntimeError("No laser fit to save")
-        self.laser.fit.save(settings_mod.laser_fit_path(self.settings_path))
+    def save_laser_fit(self, fit: LaserFit):
+        """Save ``fit`` beside the settings file and put it in use for the power of every later trial."""
+        fit.save(settings_mod.laser_fit_path(self.settings_path))
+        self.laser.fit = fit
 
     def load_laser_fit(self):
         p = settings_mod.laser_fit_path(self.settings_path)

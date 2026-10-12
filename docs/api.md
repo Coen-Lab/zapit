@@ -31,8 +31,10 @@ Beam and laser:
 ```python
 z.move_beam_mm([x, y]); z.move_beam_pixels([col, row]); z.zero_scanners()
 z.set_laser_mw(2.0); z.set_laser_control_volts(0.0)
-z.generate_laser_calibration_curve(); z.save_laser_fit()
+fit = z.generate_laser_calibration_curve(); z.save_laser_fit(fit)
 ```
+
+`generate_laser_calibration_curve` returns the fit without using it; `save_laser_fit(fit)` saves it beside the settings file and puts it in use. The sweep raises `ValueError` when the reading does not rise steadily with the control voltage (a photodiode out of the beam), and returns None when cancelled with `z.abort_laser_sweep = True`.
 
 ## Stimulus configs
 

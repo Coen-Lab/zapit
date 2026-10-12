@@ -15,6 +15,11 @@ import numpy as np
 import yaml
 from scipy.optimize import curve_fit
 
+# A usable sweep: the fit's error is under a tenth of the range it rises over, and it never falls by more
+# than a twentieth of that range (a cubic can dip a little at a laser's threshold).
+MAX_RMSE_FRACTION = 0.1
+MAX_DIP_FRACTION = 0.05
+
 
 def _sigmoid(x, a, b, c, d):
     return a + b / (1.0 + np.exp(-c * (x - d)))
@@ -59,6 +64,21 @@ class LaserFit:
 
         fit_type, rmse, coefs, pred = best
         return cls(x, y, np.asarray(pred, dtype=float), fit_type, rmse, coefs)
+
+    def problem(self) -> str | None:
+        """Why this fit cannot map power, or None. Power is read off the fitted curve by interpolation,
+        so it must rise with the control voltage, clearly above the noise of the reading."""
+        f = np.asarray(self.fitted_sensor_values, dtype=float)
+        span = float(f.max() - f.min())
+        if f[-1] - f[0] <= 0:
+            return "The sensor reading does not rise with the control voltage"
+        if self.rmse > MAX_RMSE_FRACTION * span:
+            return (f"The sensor reading barely changes with the control voltage (noise {self.rmse:.3g} V "
+                    f"over a {span:.3g} V range)")
+        dip = float((np.maximum.accumulate(f) - f).max())
+        if dip > MAX_DIP_FRACTION * span:
+            return f"The fitted curve falls by {100 * dip / span:.0f}% of its range part of the way up"
+        return None
 
     def evaluate(self, control_values) -> np.ndarray:
         x = np.asarray(control_values, dtype=float)

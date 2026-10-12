@@ -47,5 +47,15 @@
 - A hand-trimmed 1.x settings file with none of the `old_layout_markers` keys: 1.x fills in missing keys, and `general.openPythonBridgeOnStartup` is in its defaults from their first commit (f9e6572).
 - Backups numbered `.bak2` rather than `.2.bak`: cosmetic.
 - Timing thresholds in the freeze and sweep tests: twice the margin of the effect they detect.
-- Quitting during a laser sweep: `run_gui` closes the model only once the sweep has returned; probed, no laser write after shutdown.
 - Setting the same experiment path again starts a new log pair: one pair per `set_experiment_path`, by design.
+- (Reopened and fixed in the sixth audit: quitting during a laser sweep. The probe used a 4 s sweep; a rig's 20 s sweep outlasted the dialog's 10 s wait and Qt aborted.)
+
+## Audit 2026-10-12 (sixth, on f24ea27): not recommended (steelman holds)
+
+- Zeroing before an arm also centres the scanners: a parked beam moves anyway when the trial plays, and the extra on-demand task comes only on the first arm after hand use.
+- One filesystem check of the experiment folder per logged arm: it replaced an `is_dir()` that already touched the share each time.
+- A remade folder holds a second log pair for the session: the first went with the share, timestamps tell them apart, and the console now says so.
+- The lone `laserFit.mat` conversion works only in place: the app prints the in-place command, the only case that arises.
+- `_unwritable` says "the trials log" for an `OSError` without a filename: that is a full disk, and its error text says so.
+- `prepare_laser_sweep` returns a refusal text or None: clear, and tested.
+- A long refusal is clipped in the status bar: it never widens the window, and at 1400 px the remedy is visible.

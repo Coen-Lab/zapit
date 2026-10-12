@@ -32,7 +32,7 @@ Adding another camera: subclass `zapit.hardware.camera.Camera`, implement the ab
 
 ## Laser
 
-Any laser with an analog modulation input. `laser.laserMinMaxControlVolts` is the voltage range to drive it over, `laser.laserMinMax_mW` the measured power at the sample at those two voltages. Lasers that are linear in between need nothing else. For a non-linear laser or an EOM, run the laser calibration (File, Laser calibration) with a photodiode on AI0: Zapit sweeps the control voltage in 25 mV steps, fits a cubic and a sigmoid, keeps the better one and stores it as `laserFit.yml` next to the settings file.
+Any laser with an analog modulation input. `laser.laserMinMaxControlVolts` is the voltage range to drive it over, `laser.laserMinMax_mW` the measured power at the sample at those two voltages. Lasers that are linear in between need nothing else. For a non-linear laser or an EOM, run the laser calibration (File, Laser calibration) with a photodiode on AI0: Zapit sweeps the control voltage in 25 mV steps, fits a cubic and a sigmoid and shows the better one. A sweep whose reading does not rise steadily with the voltage is refused. Save and use fit stores it as `laserFit.yml` next to the settings file and puts it in use; until then trials keep the fit they had. A sweep takes about 20 s over 0 to 5 V, the rest of the window is locked while it runs, and Cancel sweep stops it.
 
 ## Scanners
 

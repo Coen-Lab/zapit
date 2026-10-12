@@ -258,10 +258,29 @@ class MainWindow(QMainWindow):
         return self._stim_coords_window
 
     def open_laser_dialog(self):
+        """Show the laser calibration dialog; one at a time, so two sweeps can never share the laser line."""
         from zapit.gui.laser_dialog import LaserDialog
-        self._laser_dialog = LaserDialog(self.model, self, before_sweep=self.prepare_laser_sweep)
+        old = self._laser_dialog
+        if old is not None and old.isVisible():
+            old.raise_()
+            old.activateWindow()
+            return
+        if old is not None:
+            old.deleteLater()
+        self._laser_dialog = LaserDialog(self.model, self, before_sweep=self.prepare_laser_sweep,
+                                         on_sweep=self._lock_for_sweep, ask=self.ask, notify=self.notify)
         self._laser_dialog.set_trial_locked(self.trial_locked)
         self._laser_dialog.show()
+
+    def _lock_for_sweep(self, running: bool):
+        """A laser sweep writes the laser line for seconds: every control in the window waits for it, for the
+        sweep's whole life rather than the dialog's, which is only a view onto it."""
+        self.centralWidget().setEnabled(not running)
+        self.set_status("Laser sweep running: the other controls are locked until it ends" if running
+                        else "Laser sweep ended: controls enabled")
+
+    def laser_sweep_running(self) -> bool:
+        return self._laser_dialog is not None and self._laser_dialog.sweeping
 
     def prepare_laser_sweep(self) -> str | None:
         """Free the laser line for a sweep: refuse while a scanner calibration is still running or stopping
@@ -463,6 +482,11 @@ class MainWindow(QMainWindow):
     def shutdown(self):
         """Stop timers, workers and any running pattern. Safe to call more than once."""
         self.frame_timer.stop()
+        dialog = self._laser_dialog
+        if dialog is not None and dialog.worker is not None and dialog.worker.isRunning():
+            # The model closes after this: a sweep step written after that would drive the laser again.
+            self.model.abort_laser_sweep = True
+            dialog.worker.wait(30000)
         if self.scanner_panel.calibration_running():
             self.model.abort_calibration = True
             self.scanner_panel.wait_for_calibration()
@@ -482,7 +506,13 @@ class MainWindow(QMainWindow):
             self.bridge = None
 
     def closeEvent(self, event):
-        if self.dialogs_enabled and not self.ask("Quit Zapit", "Close Zapit and stop the hardware?"):
+        question = "Close Zapit and stop the hardware?"
+        if self.laser_sweep_running():
+            question = "A laser sweep is running. Cancel it, close Zapit and stop the hardware?"
+        elif self._laser_dialog is not None and self._laser_dialog.new_fit is not None:
+            question = ("The new laser fit has not been saved and is not in use. Discard it, close Zapit and "
+                        "stop the hardware?")
+        if self.dialogs_enabled and not self.ask("Quit Zapit", question):
             event.ignore()
             return
         self.shutdown()

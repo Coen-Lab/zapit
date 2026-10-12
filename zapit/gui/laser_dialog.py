@@ -1,7 +1,9 @@
 """Laser power calibration dialog: sweep the control voltage, plot the photodiode response and save the fit.
 
 The sweep (``Zapit.generate_laser_calibration_curve``) blocks for seconds on real
-hardware, so it runs in a ``Worker`` thread; the plot updates when it finishes.
+hardware (about 20 s over 0-5 V), so it runs in a ``Worker`` thread; the plot updates
+when it finishes. A new fit is shown, not used: only "Save and use fit" puts it in use,
+and leaving the dialog with an unsaved one asks first.
 """
 from __future__ import annotations
 
@@ -11,21 +13,30 @@ from PyQt6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButt
 
 from zapit.gui.bridge import Worker
 
+RUN_TEXT = "Run sweep"
+CANCEL_TEXT = "Cancel sweep"
+
 
 class LaserDialog(QDialog):
     """Run and inspect the laser control-voltage to sensor-reading curve."""
 
-    def __init__(self, model, parent=None, before_sweep=None):
+    def __init__(self, model, parent=None, before_sweep=None, on_sweep=None, ask=None, notify=None):
         """``before_sweep`` runs on the GUI thread before each sweep and returns an error text to refuse it,
         or None; the main window's ``prepare_laser_sweep`` stops a check pattern or point mode first.
-        The dialog is window modal: a sweep writes the laser line for seconds, and any other control used
-        meanwhile would take the line and corrupt the fit."""
+        ``on_sweep(running)`` is called when a sweep starts and when it has ended: the main window locks its
+        controls for the sweep's whole life, because any of them would take the laser line and corrupt the
+        fit. While a sweep runs the dialog cannot be closed (Esc included); Cancel sweep stops it.
+        ``ask(title, text) -> bool`` and ``notify(title, text, kind)`` default to message boxes."""
         super().__init__(parent)
         self.model = model
         self.worker: Worker | None = None
         self.before_sweep = before_sweep
+        self.on_sweep = on_sweep
+        self.ask = ask or self._ask
+        self.notify = notify or self._notify
         self.trial_locked = False
-        self.setWindowModality(Qt.WindowModality.WindowModal)
+        self.sweeping = False
+        self.new_fit = None        # from the last sweep, not saved and not in use
         self.setWindowTitle("Laser calibration")
         self.resize(700, 500)
 
@@ -40,14 +51,15 @@ class LaserDialog(QDialog):
         self.fitted = self.plot.plot([], [], pen=pg.mkPen("r", width=2), name="fit")
         layout.addWidget(self.plot, 1)
 
-        self.info = QLabel("No laser fit loaded")
+        self.info = QLabel()
+        self.info.setWordWrap(True)
         layout.addWidget(self.info)
 
         row = QHBoxLayout()
-        self.run_btn = QPushButton("Run sweep")
-        self.save_btn = QPushButton("Save fit")
+        self.run_btn = QPushButton(RUN_TEXT)
+        self.save_btn = QPushButton("Save and use fit")
         self.close_btn = QPushButton("Close")
-        self.run_btn.clicked.connect(self.run_sweep)
+        self.run_btn.clicked.connect(self._run_clicked)
         self.save_btn.clicked.connect(self.save_fit)
         self.close_btn.clicked.connect(self.close)
         row.addWidget(self.run_btn)
@@ -57,62 +69,127 @@ class LaserDialog(QDialog):
         layout.addLayout(row)
         self.show_fit(self.model.laser.fit)
 
-    def show_fit(self, fit):
+    def show_fit(self, fit, new: bool = False):
+        self.save_btn.setEnabled(self.new_fit is not None)
         if fit is None:
             self.measured.setData([], [])
             self.fitted.setData([], [])
-            self.save_btn.setEnabled(False)
-            self.info.setText("No laser fit loaded: the laser is assumed linear between its min and max")
+            self.info.setText("No laser fit in use: the laser is assumed linear between laser.laserMinMax_mW "
+                              "at laser.laserMinMaxControlVolts")
             return
         self.measured.setData(fit.control_values, fit.sensor_values)
         self.fitted.setData(fit.control_values, fit.fitted_sensor_values)
-        self.save_btn.setEnabled(True)
-        self.info.setText(f"Fit: {fit.fit_type}, RMSE {fit.rmse:.4g}, {len(fit.control_values)} points, "
-                          f"made {fit.date_made or 'unknown'}")
+        what = (f"New fit: {fit.fit_type}, RMSE {fit.rmse:.4g}, {len(fit.control_values)} points. Not in use "
+                f"until you press Save and use fit") if new else \
+            (f"Fit in use: {fit.fit_type}, RMSE {fit.rmse:.4g}, {len(fit.control_values)} points, "
+             f"made {fit.date_made or 'unknown'}")
+        self.info.setText(what)
 
     def set_trial_locked(self, locked: bool):
         """A trial owns the outputs: no sweep until it ends."""
         self.trial_locked = bool(locked)
         self._update_run_btn()
 
-    def _update_run_btn(self, sweeping: bool | None = None):
-        # The done and failed slots pass sweeping=False: the worker thread may not have returned yet.
-        if sweeping is None:
-            sweeping = self.worker is not None and self.worker.isRunning()
-        self.run_btn.setEnabled(not self.trial_locked and not sweeping)
+    def _update_run_btn(self):
+        self.run_btn.setText(CANCEL_TEXT if self.sweeping else RUN_TEXT)
+        self.run_btn.setEnabled(self.sweeping or not self.trial_locked)
+
+    # ------------------------------------------------------------------ sweep
+    def _run_clicked(self):
+        if self.sweeping:
+            self.cancel_sweep()
+        else:
+            self.run_sweep()
 
     def run_sweep(self):
-        if self.trial_locked or (self.worker is not None and self.worker.isRunning()):
+        if self.trial_locked or self.sweeping:
             return
         refused = self.before_sweep() if self.before_sweep is not None else None
         if refused:
             self.info.setText(refused)
             return
-        self.run_btn.setEnabled(False)
-        self.info.setText("Sweeping the laser control voltage...")
+        self.sweeping = True
+        if self.on_sweep is not None:
+            self.on_sweep(True)
+        self._update_run_btn()
+        self.info.setText("Sweeping the laser control voltage... The other controls are locked until it ends.")
         self.worker = Worker(self.model.generate_laser_calibration_curve, parent=self)
         self.worker.done.connect(self._sweep_done, Qt.ConnectionType.QueuedConnection)
         self.worker.failed.connect(self._sweep_failed, Qt.ConnectionType.QueuedConnection)
         self.worker.start()
 
+    def cancel_sweep(self):
+        """Stop the sweep after its current step; the laser is set to 0 V and the fit in use is unchanged."""
+        if not self.sweeping:
+            return
+        self.model.abort_laser_sweep = True
+        self.run_btn.setEnabled(False)
+        self.info.setText("Cancelling the sweep...")
+
+    def _end_sweep(self):
+        self.sweeping = False
+        self._update_run_btn()
+        if self.on_sweep is not None:
+            self.on_sweep(False)
+
     def _sweep_done(self, fit):
-        self._update_run_btn(sweeping=False)
-        self.show_fit(fit)
+        self._end_sweep()
+        if fit is None:
+            self.show_fit(self.model.laser.fit)
+            self.info.setText("Sweep cancelled; the fit in use is unchanged")
+            return
+        self.new_fit = fit
+        self.show_fit(fit, new=True)
 
     def _sweep_failed(self, msg: str):
-        self._update_run_btn(sweeping=False)
+        self._end_sweep()
         self.info.setText(f"Sweep failed: {msg}")
-        QMessageBox.critical(self, "Laser calibration", msg)
+        self.notify("Laser calibration", msg, "critical")
 
     def save_fit(self):
-        try:
-            self.model.save_laser_fit()
-        except (RuntimeError, OSError) as e:
-            QMessageBox.warning(self, "Laser calibration", str(e))
+        if self.new_fit is None:
             return
+        try:
+            self.model.save_laser_fit(self.new_fit)
+        except OSError as e:
+            self.notify("Laser calibration", f"The fit was not saved and is not in use: {e}", "warning")
+            return
+        self.new_fit = None
+        self.show_fit(self.model.laser.fit)
         self.info.setText(self.info.text() + "  (saved)")
 
+    # ------------------------------------------------------------------ leaving
+    def may_leave(self) -> bool:
+        """False while a sweep runs; with an unsaved new fit, True only if the user discards it."""
+        if self.sweeping:
+            self.info.setText("A sweep is running: press Cancel sweep first, or wait for it to end")
+            return False
+        if self.new_fit is not None:
+            if not self.ask("Laser calibration", "The new laser fit has not been saved and is not in use. "
+                                                 "Close and discard it?"):
+                return False
+            self.new_fit = None
+            self.show_fit(self.model.laser.fit)
+        return True
+
+    def reject(self):
+        # Esc lands here, not in closeEvent: once it hid the dialog mid-sweep and freed the main window.
+        if self.may_leave():
+            super().reject()
+
     def closeEvent(self, event):
-        if self.worker is not None and self.worker.isRunning():
-            self.worker.wait(10000)
+        if not self.may_leave():
+            event.ignore()
+            return
         super().closeEvent(event)
+
+    def _ask(self, title: str, text: str) -> bool:
+        reply = QMessageBox.question(self, title, text,
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                     QMessageBox.StandardButton.No)
+        return reply == QMessageBox.StandardButton.Yes
+
+    def _notify(self, title: str, text: str, kind: str = "information"):
+        icon = {"warning": QMessageBox.Icon.Warning, "critical": QMessageBox.Icon.Critical}.get(
+            kind, QMessageBox.Icon.Information)
+        QMessageBox(icon, title, text, QMessageBox.StandardButton.Ok, self).exec()

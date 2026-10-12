@@ -54,6 +54,13 @@ Python rewrite by the Coen Lab (UCL).
     `started`, `disarmed`) columns and millisecond timestamps, written only once the DAQ accepts
     the trial; the experiment folder is created if needed. Each config gets its own parameter log and trials
     file; the parameter log records the config's absolute path.
+  * A trial the log cannot record is refused before the DAQ is armed, so a trials CSV left open in
+    Excel stops the experiment until it is closed (the refusal names the file). An experiment folder
+    that has gone, such as a dropped network share, is made again with a new parameter log, or the
+    trial is refused. A laser or beam left on from the GUI is set to 0 V before a trial arms.
+  * The laser calibration sweep can be cancelled and locks the rest of the window while it runs;
+    its fit is used only once saved, and a sweep whose reading does not rise with the control
+    voltage is refused.
   * CLI: `zapit gui`, `zapit server`, `zapit pattern`, `zapit check-config`.
 
 ### 2026/08/16 v1.0.4

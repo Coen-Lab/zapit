@@ -88,10 +88,47 @@ def test_sample_calibration_maps_outline(model):
 
 def test_laser_calibration_curve(model):
     fit = model.generate_laser_calibration_curve(step=0.25)
-    assert fit.fit_type in ("poly3", "sigmoid")
+    assert fit.fit_type in ("poly3", "sigmoid") and fit.problem() is None
+    assert model.laser.fit is None                     # shown, not used, until it is saved
+    model.laser.fit = fit
     cv = model.laser.mw_to_control(10.0)
     assert 0 <= cv <= 5
     assert model.laser.mw_to_control(1000.0, warn=None) == 5.0
+
+
+def test_a_saved_laser_fit_is_the_one_in_use(data_dir, tmp_path):
+    import shutil
+    from zapit.pointer import Zapit
+    shutil.copyfile(data_dir / "settings_test.yml", tmp_path / "zapitSystemSettings.yml")
+    m = Zapit(simulated=True, settings_path=tmp_path / "zapitSystemSettings.yml", start_camera=False)
+    try:
+        fit = m.generate_laser_calibration_curve(step=0.25)
+        m.save_laser_fit(fit)
+        assert m.laser.fit is fit and (tmp_path / "laserFit.yml").exists()
+    finally:
+        m.close()
+
+
+def test_a_sweep_without_the_photodiode_is_refused(model):
+    # Once a noise-only sweep went straight into use and 2 mW became a fifth of that, unsaved.
+    model.daq.ai_source = lambda ch: float(np.random.default_rng().normal()) * 0.01
+    with pytest.raises(ValueError, match="photodiode"):
+        model.generate_laser_calibration_curve(step=0.05)
+    assert model.laser.fit is None and model.daq.laser_volts == 0
+
+
+def test_a_laser_sweep_can_be_cancelled(model):
+    steps = []
+    read = model.daq.read_analog
+
+    def read_and_cancel(ch):
+        steps.append(model.daq.laser_volts)
+        if len(steps) == 3:
+            model.abort_laser_sweep = True
+        return read(ch)
+    model.daq.read_analog = read_and_cancel
+    assert model.generate_laser_calibration_curve() is None
+    assert len(steps) == 3 and model.daq.laser_volts == 0 and model.laser.fit is None
 
 
 def test_patterns_play_and_stop(ready_model):
