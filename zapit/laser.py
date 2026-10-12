@@ -31,8 +31,11 @@ MAX_DIP_FRACTION = 0.05
 # range, for clean data.
 FORMULA_NOISE_FACTOR = 5.0
 NOISE_FLOOR_FRACTION = 1e-3
-# Moving-average width of the monotone curve: 150 mV at 25 mV steps, and at most a tenth of the sweep, so a short
-# sweep (a narrow laser.laserMinMaxControlVolts) keeps its threshold corner.
+# Points in a sweep: 25 mV steps over 0 to 5 V. A narrow laser.laserMinMaxControlVolts is swept in as many finer
+# steps, because on a few dozen points neither the formula check nor the smoothing can find a threshold corner.
+SWEEP_POINTS = 201
+# Moving-average width of the monotone curve: 150 mV over 0 to 5 V, and at most a tenth of the sweep, so a short
+# sweep from the API keeps its threshold corner.
 SMOOTH_POINTS = 7
 # A curve that stays within this fraction of its top over more than a tenth of the sweep is reported as
 # saturating: the laser's, or a clipping photodiode's, which the readings cannot tell apart.

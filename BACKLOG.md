@@ -78,3 +78,14 @@
 - A read-only `--settings` model does not emit `on_settings`: unchanged behaviour, and the widget that made the change already shows it.
 - The monotone curve flattens a mode-hop dip rather than refusing it: no worse than the cubic, which smoothed through it.
 - YAML comments in the settings file are lost on each GUI write: the file is app-written, and this predates the one-key writes.
+
+## Audit 2026-10-12 (ninth, on 7bce3b2): not recommended (steelman holds)
+
+- The strip keeps a fixed file's problem until the next GUI change: declined in the eighth audit (no file watcher), and changes made meanwhile are now saved by that change.
+- A 0/1 setting is written back as false/true by the GUI's write: the values are equal, and it is not reported as a hand edit.
+- A sharp lasing threshold reads about 0.2 mW off at 1 mW on a 201-point sweep at 0.2% noise: the smoothing trades that bias for noise; real thresholds are softer, and plan.md item 8 checks a real curve.
+- `micronsPerPixel: 11,7` inside a `{...}` line reads as 11 plus a key `7`: that is YAML; the strip names the stray `camera.7`.
+
+## Follow-up
+
+- `general.maxSettingsBackUpFiles` does nothing since start-up stopped correcting the file (ninth audit, H1). Dropping it makes every current file fail validation, so it needs a migration step; documented as unused until then.

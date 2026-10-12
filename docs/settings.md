@@ -1,6 +1,6 @@
 # Settings
 
-The settings file is `zapitSystemSettings.yml`. It is looked for in the folder named by the `ZAPIT_SETTINGS` environment variable, then in `%USERPROFILE%\ZapitSettings\`. If none exists a default is written to the first of those. The defaults are placeholders: on real hardware Zapit refuses to stimulate (trials and check patterns) while `laser.laserMinMax_mW`, `scanners.voltsPerPixel` and `camera.micronsPerPixel` all still hold their shipped values, so set them for the rig first, then restart. Changes the GUI makes (exposure, calibration parameters, `refAP`) never count. The file is validated on every load: unknown keys are dropped, missing keys filled from defaults and invalid values replaced, with a backup in a `backups/` folder beside it. A file passed with `--settings` is never rewritten. The GUI writes changes back as you make them, one key at a time into the file as it is on disk, so a hand edit made while Zapit runs is kept; it takes effect when Zapit restarts, and the status strip says so until then. A file that would need correcting (a mistyped key or value, a half-saved file) is never written to: the strip names what is wrong, and changes made in Zapit are not saved until the file is fixed.
+The settings file is `zapitSystemSettings.yml`. It is looked for in the folder named by the `ZAPIT_SETTINGS` environment variable, then in `%USERPROFILE%\ZapitSettings\`. If none exists a default is written to the first of those. The defaults are placeholders: on real hardware Zapit refuses to stimulate (trials and check patterns) while `laser.laserMinMax_mW`, `scanners.voltsPerPixel` and `camera.micronsPerPixel` all still hold their shipped values, so set them for the rig first, then restart. Changes the GUI makes (exposure, calibration parameters, `refAP`) never count. The file is validated on every load and never corrected: a missing, mistyped or invalid entry is left in the file as it is, Zapit uses the default for it, and the status strip names it. If that entry is one of the three rig keys, stimulation is refused on real hardware until the file is fixed and Zapit restarted, so a typo can never put the placeholder laser range or scales in use. `laser.laserMinMaxControlVolts` and `laser.laserMinMax_mW` must rise from the first value to the second. A file passed with `--settings` is never written to. The GUI writes changes back as you make them, one key at a time into the file as it is on disk, so a hand edit made while Zapit runs is kept; it takes effect when Zapit restarts, and the status strip says so until then. A file that fails validation (a mistyped key or value, a half-saved file) is never written to: the strip names what is wrong, and changes made in Zapit meanwhile are saved with the first change after it is fixed.
 
 The laser fit lives beside it as `laserFit.yml`. Without one, power is mapped linearly between `laserMinMaxControlVolts` and `laserMinMax_mW`, and Zapit says so at start-up. A fit in use that may map power wrongly (one from before the sweep was checked, or brought over from Zapit 1.x) is named on the status strip until a new sweep is saved.
 
@@ -8,7 +8,7 @@ To bring over a rig's files from Zapit 1.x (settings, laser fit, recent configs,
 
 | Key | Default | Meaning |
 |---|---|---|
-| `general.maxSettingsBackUpFiles` | 50 | Backups kept in `backups/` |
+| `general.maxSettingsBackUpFiles` | 50 | Not used: Zapit no longer rewrites the file whole, so it makes no backups |
 | `NI.device_ID` | Dev1 | NI device name from NI MAX |
 | `NI.samplesPerSecond` | 100000 | AO sample rate |
 | `NI.triggerChannel` | PFI0 | Start trigger terminal |
@@ -16,8 +16,8 @@ To bring over a rig's files from Zapit 1.x (settings, laser fit, recent configs,
 | `scanners.invertXscanner` | false | Flip the X command |
 | `scanners.invertYscanner` | false | Flip the Y command |
 | `laser.name` | obis | Label only |
-| `laser.laserMinMaxControlVolts` | [0, 5] | Control voltage range |
-| `laser.laserMinMax_mW` | [0, 75] | Power at the sample at those voltages |
+| `laser.laserMinMaxControlVolts` | [0, 5] | Control voltage range, lowest first |
+| `laser.laserMinMax_mW` | [0, 75] | Power at the sample at those voltages, lowest first |
 | `laser.maxValueInGUI` | 30 | Upper limit of the GUI power slider |
 | `camera.backend` | basler | `basler` only, for now |
 | `camera.connectionIndex` | 0 | Which camera when several are attached, counting from 0 |

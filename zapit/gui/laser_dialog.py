@@ -42,6 +42,7 @@ class LaserDialog(QDialog):
         self.ask = ask or self._ask
         self.notify = notify or self._notify
         self.trial_locked = False
+        self.quitting = False      # set by close_discarding
         self.sweeping = False
         self.new_fit = None        # from the last sweep, not saved and not in use
         self.setWindowTitle("Laser calibration")
@@ -66,8 +67,9 @@ class LaserDialog(QDialog):
         self.run_btn = QPushButton(RUN_TEXT)
         self.save_btn = QPushButton("Save and use fit")
         self.close_btn = QPushButton("Close")
-        self.run_btn.setToolTip("Step the laser control voltage over laser.laserMinMaxControlVolts in 25 mV "
-                                "steps, read the photodiode on AI0 at each and fit the curve (about 20 s). The "
+        self.run_btn.setToolTip("Step the laser control voltage over laser.laserMinMaxControlVolts in 200 even "
+                                "steps (25 mV over 0 to 5 V), read the photodiode on AI0 at each and fit the curve "
+                                "(about 20 s). The "
                                 "rest of the window is locked meanwhile; press again to cancel. Disabled while a "
                                 "trial is armed or playing.")
         self.save_btn.setToolTip("Save the new fit as laserFit.yml beside the settings file and use it for the "
@@ -159,11 +161,15 @@ class LaserDialog(QDialog):
 
     def _sweep_done(self, fit):
         self._end_sweep()
+        if self.quitting:
+            return
         if fit is None:
             pending = self.new_fit is not None   # what Save and use fit would save, so it is the one shown
             self.show_fit(self.new_fit if pending else self.model.laser.fit, new=pending)
+            # Ahead of the fit's own text, which keeps its warnings and flat-top note.
             self.info.setText("Sweep cancelled; the fit in use is unchanged" +
-                              ("; the unsaved fit from the sweep before is shown" if pending else ""))
+                              (", and the unsaved fit from the sweep before is shown" if pending else "") +
+                              ". " + self.info.text())
             return
         self.new_fit = fit
         self.show_fit(fit, new=True)
@@ -202,6 +208,8 @@ class LaserDialog(QDialog):
     # ------------------------------------------------------------------ leaving
     def may_leave(self) -> bool:
         """False while a sweep runs; with an unsaved new fit, True only if the user discards it."""
+        if self.quitting:
+            return True
         if self.sweeping:
             self.info.setText("A sweep is running: press Cancel sweep first, or wait for it to end")
             return False
@@ -212,6 +220,13 @@ class LaserDialog(QDialog):
             self.new_fit = None
             self.show_fit(self.model.laser.fit)
         return True
+
+    def close_discarding(self):
+        """Zapit is quitting and the user has been asked: drop the unsaved fit, and any fit a sweep cancelled by
+        the quit still delivers, so closing never asks again."""
+        self.quitting = True
+        self.new_fit = None
+        self.save_btn.setEnabled(False)
 
     def reject(self):
         # Esc lands here, not in closeEvent: once it hid the dialog mid-sweep and freed the main window.

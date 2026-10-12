@@ -1,7 +1,8 @@
 """System settings: defaults, validation, YAML persistence and file discovery.
 
 Unknown keys are dropped on load, missing ones filled from defaults and invalid
-values replaced; the file is then rewritten with a timestamped backup.
+values replaced; the file itself is never corrected, so a typo cannot put the
+shipped placeholders over a rig's values.
 
 Settings are a plain nested dict. Access is ``settings["camera"]["micronsPerPixel"]``
 so the names line up with the YAML.
@@ -9,9 +10,9 @@ so the names line up with the YAML.
 from __future__ import annotations
 
 import copy
-import datetime as _dt
 import os
-import shutil
+from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,11 @@ def _is_nonneg(x: Any) -> bool:
 
 def _is_pair(x: Any) -> bool:
     return isinstance(x, (list, tuple)) and len(x) == 2 and all(_is_number(v) for v in x)
+
+
+def _is_rising_pair(x: Any) -> bool:
+    """A (min, max) range: reversed or equal, power would map backwards or divide by zero."""
+    return _is_pair(x) and x[0] < x[1]
 
 
 def _is_str(x: Any) -> bool:
@@ -68,8 +74,8 @@ _SCHEMA: dict[str, dict[str, tuple[Any, Any]]] = {
     },
     "laser": {
         "name": ("obis", _is_str),
-        "laserMinMaxControlVolts": ([0.0, 5.0], _is_pair),
-        "laserMinMax_mW": ([0.0, 75.0], _is_pair),
+        "laserMinMaxControlVolts": ([0.0, 5.0], _is_rising_pair),
+        "laserMinMax_mW": ([0.0, 75.0], _is_rising_pair),
         "maxValueInGUI": (30.0, _is_nonneg),
     },
     "camera": {
@@ -121,7 +127,16 @@ class OldSettingsError(RuntimeError):
 
 
 class SettingsFileError(RuntimeError):
-    """The settings file on disk cannot take a GUI change: unreadable, 1.x, or with invalid entries."""
+    """The settings file on disk cannot take a GUI change: unreadable, 1.x, or with invalid entries. The message
+    says what is wrong with it, without its path."""
+
+
+@dataclass
+class SettingsRead:
+    """A settings file as Zapit reads it: never corrected on disk."""
+    settings: dict[str, Any]    # the file's valid entries, defaults for the rest
+    problem: str | None         # what is wrong with the file ("has laser.laserMinMax_mW invalid"); None when valid
+    unread_rig_keys: list[str]  # ``RIG_KEYS`` the file gives no valid value for, so they hold their placeholder
 
 
 def default_settings() -> dict[str, dict[str, Any]]:
@@ -223,34 +238,38 @@ def find_settings_file(create: bool = True) -> Path:
     return f
 
 
-def load_settings(path: str | os.PathLike | None = None, *, write_back: bool | None = None) -> dict[str, Any]:
-    """Load, validate and (optionally) rewrite the settings file.
-
-    path: explicit file. When None the standard locations are searched and a
-          default file is created if needed.
-    write_back: rewrite the file if it needed correction. Defaults to True for
-          the discovered file and False for an explicit path (test files are
-          never modified unless asked).
-    """
-    explicit = path is not None
-    path = Path(path) if explicit else find_settings_file()
-    if write_back is None:
-        write_back = not explicit
-    with open(path, encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
+def read_settings(path: str | os.PathLike) -> SettingsRead:
+    """Read and validate a settings file, never writing to it. A file that cannot be read gives the defaults,
+    with every rig key unread. Raises OldSettingsError for a Zapit 1.x file."""
+    path = Path(path)
+    every_rig_key = [f"{sec}.{key}" for sec, key in RIG_KEYS]
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = yaml.safe_load(fh)
+    except (OSError, yaml.YAMLError) as e:
+        return SettingsRead(default_settings(), f"could not be read ({type(e).__name__})", every_rig_key)
     old = old_layout_markers(raw)
     if old:
         # The generic correction would silently keep a 1-based camera index and reset renamed keys.
         raise OldSettingsError(f"{path} is a Zapit 1.x settings file ({', '.join(old)}) and is not read. Convert "
                                f"it in place with `uv run python scripts/migrate_rig.py --from \"{path.parent}\" "
                                f"--to \"{path.parent}\"`, then restart")
-    settings, valid = validate(raw)
-    if not valid:
-        print(f"Settings file {path} had missing, unknown or invalid entries; using corrected values")
-        if write_back:
-            _backup(path, settings["general"]["maxSettingsBackUpFiles"])
-            save_settings(settings, path)
-    return settings
+    if not isinstance(raw, dict):
+        return SettingsRead(default_settings(), "holds no settings", every_rig_key)
+    settings, found = _checked(raw)
+    unread = [f"{sec}.{key}" for sec, key in RIG_KEYS
+              if {f"{sec} missing", f"{sec}.{key} missing", f"{sec}.{key} invalid"} & set(found)]
+    return SettingsRead(settings, f"has {', '.join(found)}" if found else None, unread)
+
+
+def load_settings(path: str | os.PathLike | None = None) -> dict[str, Any]:
+    """The settings for a command-line tool, from ``path`` or else the file found (or created) in the standard
+    locations. Never written to: a problem with the file is printed, and defaults stand in for its bad entries."""
+    path = Path(path) if path is not None else find_settings_file()
+    read = read_settings(path)
+    if read.problem:
+        print(f"WARNING: settings file {path} {read.problem}; defaults stand in for what it does not give")
+    return read.settings
 
 
 def save_settings(settings: dict[str, Any], path: str | os.PathLike) -> None:
@@ -260,9 +279,9 @@ def save_settings(settings: dict[str, Any], path: str | os.PathLike) -> None:
         yaml.safe_dump(settings, fh, sort_keys=False, default_flow_style=None)
 
 
-def write_setting(path: str | os.PathLike, section: str, key: str, value,
-                  in_use: dict[str, Any]) -> dict[str, Any]:
-    """Write one key into the settings file as it is on disk now, so a hand edit made since start-up is kept.
+def write_keys(path: str | os.PathLike, keys: Iterable[tuple[str, str]], in_use: dict[str, Any]) -> dict[str, Any]:
+    """Write ``keys`` (``(section, key)`` pairs), at their ``in_use`` values, into the settings file as it is on
+    disk now, so a hand edit made since start-up is kept.
 
     A missing file is written whole from ``in_use``. Returns the settings written. Raises SettingsFileError,
     leaving the file alone, when it cannot be read as valid current settings (a hand edit half done or
@@ -273,18 +292,14 @@ def write_setting(path: str | os.PathLike, section: str, key: str, value,
         on_disk = copy.deepcopy(in_use)
     else:
         try:
-            with open(path, encoding="utf-8") as fh:
-                raw = yaml.safe_load(fh)
-        except (OSError, yaml.YAMLError) as e:
-            raise SettingsFileError(f"{path} could not be read ({type(e).__name__})") from e
-        if old_layout_markers(raw):
-            raise SettingsFileError(f"{path} is a Zapit 1.x settings file")
-        if not isinstance(raw, dict):
-            raise SettingsFileError(f"{path} holds no settings")
-        on_disk, found = _checked(raw)
-        if found:
-            raise SettingsFileError(f"{path} has {', '.join(found)}")
-    on_disk[section][key] = copy.deepcopy(value)
+            read = read_settings(path)
+        except OldSettingsError as e:
+            raise SettingsFileError("is a Zapit 1.x settings file") from e
+        if read.problem:
+            raise SettingsFileError(read.problem)
+        on_disk = read.settings
+    for section, key in keys:
+        on_disk[section][key] = copy.deepcopy(in_use[section][key])
     save_settings(on_disk, path)
     return on_disk
 
@@ -293,16 +308,6 @@ def differing_keys(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
     """``section.key`` of every schema key whose value differs between two settings dicts."""
     return [f"{sec}.{key}" for sec, leaves in _SCHEMA.items() for key in leaves
             if a.get(sec, {}).get(key) != b.get(sec, {}).get(key)]
-
-
-def _backup(path: Path, keep: int) -> None:
-    bdir = path.parent / "backups"
-    bdir.mkdir(exist_ok=True)
-    stamp = _dt.datetime.now().strftime("%Y_%m_%d__%H_%M_%S_")
-    shutil.copyfile(path, bdir / f"{stamp}{path.name}")
-    old = sorted(bdir.glob("*.yml"), key=lambda p: p.stat().st_mtime, reverse=True)[int(keep):]
-    for p in old:
-        p.unlink()
 
 
 def laser_fit_path(settings_path: Path) -> Path:

@@ -9,7 +9,7 @@ z = Zapit(simulated=False)          # reads the settings file, connects camera a
 
 `calibrate_scanners()` returns False when fewer than four spots are found, when it is cancelled with `z.abort_calibration = True`, or when the fit's mean residual is above 100 um (usually a mirrored view that needs `scanners.invertXscanner` or `invertYscanner`).
 
-`Zapit(simulated=True)` substitutes a simulated camera and DAQ. `settings_path=` loads a specific settings file and never rewrites it.
+`Zapit(simulated=True)` substitutes a simulated camera and DAQ. `settings_path=` loads a specific settings file and never writes to it.
 
 ## Calibration
 
@@ -34,7 +34,7 @@ z.set_laser_mw(2.0); z.set_laser_control_volts(0.0)
 fit = z.generate_laser_calibration_curve(); z.save_laser_fit(fit)
 ```
 
-`generate_laser_calibration_curve` returns the fit without using it; `save_laser_fit(fit)` saves it beside the settings file and puts it in use. The sweep raises `zapit.laser.LaserFitRefused` (a `ValueError` whose `fit` holds the refused fit and its readings) when the reading does not rise steadily with the control voltage (a photodiode out of the beam), `NotReadyError` when a client arms a trial mid-sweep (the trial keeps the lines), and returns None when cancelled with `z.abort_laser_sweep = True`.
+`generate_laser_calibration_curve` sweeps 201 points over `laser.laserMinMaxControlVolts` (`min_max_volts=` and `points=` change them) and returns the fit without using it; `save_laser_fit(fit)` saves it beside the settings file and puts it in use. The sweep raises `zapit.laser.LaserFitRefused` (a `ValueError` whose `fit` holds the refused fit and its readings) when the reading does not rise steadily with the control voltage (a photodiode out of the beam), `NotReadyError` when a client arms a trial mid-sweep (the trial keeps the lines), and returns None when cancelled with `z.abort_laser_sweep = True`.
 
 ## Stimulus configs
 

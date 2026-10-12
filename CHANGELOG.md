@@ -36,7 +36,9 @@ Python rewrite by the Coen Lab (UCL).
     `%USERPROFILE%\ZapitSettings` only; a 1.x settings file found there is refused, naming the
     script. The old TCP server switch is not carried over (the new server stays on).
   * A rig refuses to stimulate while `laser.laserMinMax_mW`, `scanners.voltsPerPixel` and
-    `camera.micronsPerPixel` all still hold their shipped placeholder values.
+    `camera.micronsPerPixel` all still hold their shipped placeholder values, or while the settings
+    file gives no valid value for one of them. The settings file is never corrected: a mistake in
+    it is named on the status strip, and defaults stand in for it until it is fixed.
   * New ZeroMQ REQ/REP JSON server (`zapit/server.py`) and Python client, bound to
     `tcp://127.0.0.1:5555` by default and started only when `server.enable` is true. The example
     Bonsai workflow arms trials in the inter-trial interval and fires only the TTL at onset.
@@ -60,17 +62,18 @@ Python rewrite by the Coen Lab (UCL).
     Excel stops the experiment until it is closed (the refusal names the file). An experiment folder
     that has gone, such as a dropped network share, is made again with a new parameter log, or the
     trial is refused. A laser or beam left on from the GUI is set to 0 V before a trial arms.
-  * The laser calibration sweep can be cancelled and locks the rest of the window while it runs;
-    its fit is used only once saved, and a sweep whose reading does not rise with the control
-    voltage is refused, with its readings plotted. The fit is a cubic or a sigmoid when one follows
-    the readings to within their noise everywhere, otherwise a smoothed monotone curve through them,
-    so a laser with a lasing threshold or one that saturates gets the right power at the low end, on
-    short sweeps too. A curve that stops rising early is pointed out, in case the photodiode clips.
-  * The GUI writes only the setting it changed into the settings file, so a hand edit made while
-    Zapit runs is kept; the status strip asks for a restart to use it. A settings file with a
-    mistake in it is never corrected over the rig's values: the strip names the mistake.
-  * The stim config editor asks before closing, loading over or quitting with unsaved conditions,
-    once.
+  * The laser calibration sweep takes 201 points over the control range (1.x stepped 25 mV) and
+    can be cancelled; it locks the rest of the window while it runs, its fit is used only once
+    saved, and a sweep whose reading does not rise with the control voltage is refused, with its
+    readings plotted. The fit is a cubic or a sigmoid when one follows the readings to within their
+    noise everywhere, otherwise a smoothed monotone curve through them, so a laser with a lasing
+    threshold or one that saturates gets the right power at the low end, on a narrow control range
+    too. A curve that stops rising early is pointed out, in case the photodiode clips.
+  * The GUI writes only the settings it changed into the settings file, so a hand edit made while
+    Zapit runs is kept; the status strip asks for a restart to use it. Changes made while the file
+    has a mistake in it are saved once it is fixed.
+  * The stim config editor asks before closing, loading over or quitting with unsaved conditions;
+    quitting asks once, naming an unsaved laser fit too.
   * CLI: `zapit gui`, `zapit server`, `zapit pattern`, `zapit check-config`.
 
 ### 2026/08/16 v1.0.4

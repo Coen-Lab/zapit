@@ -29,7 +29,7 @@ from zapit.events import Signal
 from zapit.hardware import make_camera, make_daq
 from zapit.hardware.camera import SimulatedCamera
 from zapit.hardware.daq import SimulatedDAQ
-from zapit.laser import LaserCalibration, LaserFit, LaserFitRefused
+from zapit.laser import SWEEP_POINTS, LaserCalibration, LaserFit, LaserFitRefused
 from zapit.stim_config import StimConfig, StimConfigError
 from zapit.transforms import ScannerMapping, Similarity, rotate_and_scale
 
@@ -72,12 +72,22 @@ class Zapit:
                  start_camera: bool = True):
         self.simulated = bool(simulated)
         self.settings_path = Path(settings_path) if settings_path else settings_mod.find_settings_file()
-        self.settings = settings_mod.load_settings(self.settings_path, write_back=settings_path is None)
+        read = settings_mod.read_settings(self.settings_path)   # never corrected on disk
+        self.settings = read.settings
         self._settings_read_only = settings_path is not None
-        # A rig must not stimulate on the placeholder laser range and scales; simulation may.
+        # A rig must not stimulate on the placeholder laser range and scales, whether the file still holds them
+        # or a typo left them standing in; simulation may.
         self.settings_unedited = not simulated and settings_mod.is_unedited_default(self.settings)
+        self.settings_unread_rig_keys: list[str] = [] if simulated else read.unread_rig_keys
         self.settings_edited_outside: list[str] = []   # keys changed in the file by hand since start-up
-        self.settings_file_problem: str | None = None  # why GUI changes are not being saved to the file
+        self.settings_file_problem: str | None = None  # what is wrong with the file, while it is wrong
+        self._unsaved_settings: list[tuple[str, str]] = []   # changed in Zapit while the file could not take them
+        if read.problem:
+            print(f"WARNING: settings file {self.settings_path} {read.problem}; defaults stand in for what it does "
+                  f"not give, and the file is left as it is")
+            self.settings_file_problem = (f"Settings file {self.settings_path.name} {read.problem}: defaults stand in "
+                                          f"for what it does not give, and changes made in Zapit are not saved to "
+                                          f"it until it is fixed")
 
         # Observable state
         self.on_state = Signal("state")
@@ -191,6 +201,10 @@ class Zapit:
             raise NotReadyError(f"The settings file {self.settings_path} still holds the shipped placeholder "
                                 f"{settings_mod.rig_keys_text()}. Set them for this rig first (docs/settings.md), "
                                 f"or migrate an existing rig with scripts/migrate_rig.py, then restart")
+        if self.settings_unread_rig_keys:
+            raise NotReadyError(f"The settings file {self.settings_path} gives no valid "
+                                f"{', '.join(self.settings_unread_rig_keys)}, so the placeholder is in use. Fix the "
+                                f"file (the status strip says what is wrong), then restart")
 
     @state.setter
     def state(self, value: str):
@@ -204,18 +218,24 @@ class Zapit:
         """Set one key, in use now and in the settings file. Only that key is written: the file is read again
         first, so a hand edit made while Zapit runs is kept there; it takes effect at the next start, and
         ``settings_edited_outside`` names the keys that differ until then. A file that is not valid settings
-        is left alone, and ``settings_file_problem`` says why until a write succeeds."""
+        is left alone, and ``settings_file_problem`` says why until a write succeeds; that write also saves every
+        change made in the meantime."""
         self.settings[section][key] = value
         if self._settings_read_only:
             return
+        if (section, key) not in self._unsaved_settings:
+            self._unsaved_settings.append((section, key))
         try:
-            on_disk = settings_mod.write_setting(self.settings_path, section, key, value, self.settings)
+            on_disk = settings_mod.write_keys(self.settings_path, self._unsaved_settings, self.settings)
         except settings_mod.SettingsFileError as e:
-            problem = f"{e}: changes made in Zapit are not saved to it until it is fixed"
+            problem = (f"Settings file {self.settings_path.name} {e}: changes made in Zapit are not saved to it "
+                       f"until it is fixed")
             if problem != self.settings_file_problem:
-                print(f"WARNING: {problem}")
+                print(f"WARNING: settings file {self.settings_path} {e}; changes made in Zapit are not saved to it "
+                      f"until it is fixed")
             self.settings_file_problem = problem
         else:
+            self._unsaved_settings = []
             edited = settings_mod.differing_keys(on_disk, self.settings)
             if edited and edited != self.settings_edited_outside:
                 print(f"WARNING: {self.settings_path} was edited while Zapit runs ({', '.join(edited)}); the "
@@ -786,9 +806,9 @@ class Zapit:
             print(f"WARNING: the disarmed row could not be written to {trials}: {e}")
 
     # ================================================================== laser calibration
-    def generate_laser_calibration_curve(self, min_max_volts=None, step: float = 0.025,
+    def generate_laser_calibration_curve(self, min_max_volts=None, points: int = SWEEP_POINTS,
                                          n_reads: int | None = None) -> LaserFit | None:
-        """Sweep the control voltage, read the photodiode on AI0 and fit the response.
+        """Sweep the control voltage in ``points`` even steps, read the photodiode on AI0 and fit the response.
 
         The fit is returned, not applied: ``save_laser_fit`` saves it and puts it in use. Returns None when
         cancelled with ``abort_laser_sweep = True`` (checked at every step). Raises ``LaserFitRefused``
@@ -799,7 +819,7 @@ class Zapit:
         # Cleared on entry, before any wait, so a cancel pressed straight after starting is kept.
         self.abort_laser_sweep = False
         lo, hi = min_max_volts or self.settings["laser"]["laserMinMaxControlVolts"]
-        vals = np.arange(lo, hi + 1e-9, step)
+        vals = np.linspace(lo, hi, points)
         n_reads = (1 if self.simulated else 4) if n_reads is None else n_reads
         sensor = np.zeros_like(vals)
         try:
@@ -810,9 +830,9 @@ class Zapit:
                 self.set_laser_control_volts(v)
                 reads = []
                 for _ in range(n_reads):
-                    reads.append(self.daq.read_analog(0))
                     if not self.simulated:
-                        time.sleep(0.025)
+                        time.sleep(0.025)   # before every read, the first too: the photodiode settles at each step
+                    reads.append(self.daq.read_analog(0))
                 sensor[i] = np.mean(reads)
         except NotReadyError as e:
             raise NotReadyError("A Bonsai or Python client armed a trial during the laser sweep, so the sweep "

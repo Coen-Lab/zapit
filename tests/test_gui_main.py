@@ -462,6 +462,66 @@ def test_quitting_over_unsaved_editor_conditions_asks(window):
     assert not window.isVisible() and not editor.isVisible() and editor_asked == [] and len(asked) == 2
 
 
+@pytest.mark.parametrize("sweeping", [False, True])
+def test_quitting_over_an_unsaved_laser_fit_asks_once(window, sweeping):
+    # Once the dialog asked again after the quit question, and ignored its own No; during a sweep the quit
+    # question left the unsaved fit out.
+    model = make_ready(window)
+    window.open_laser_dialog()
+    dialog = window._laser_dialog
+    dialog.run_sweep()
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=10) and dialog.new_fit is not None
+    if sweeping:
+        slow_sweep(model, 0.01)
+        dialog.run_sweep()
+        process_events(100)
+    asked, dialog_asked = [], []
+    dialog.ask = lambda title, text: dialog_asked.append(text) or False
+    window.ask = lambda title, text: asked.append(text) or True
+    window.dialogs_enabled = True
+    try:
+        window.close()
+        process_events(100)
+        dialog.close()   # what quitting the application does next
+    finally:
+        window.dialogs_enabled = False
+    assert not window.isVisible() and not dialog.isVisible() and dialog_asked == [], dialog_asked
+    assert len(asked) == 1 and "laser fit has not been saved" in asked[0]
+    assert ("sweep is running" in asked[0]) == sweeping
+
+
+def test_a_cancelled_sweep_keeps_the_fit_notes(window):
+    model = make_ready(window)
+    model.daq.ai_source = lambda ch: min(model._last_laser_volts / 3, 1.0)
+    window.open_laser_dialog()
+    dialog = window._laser_dialog
+    dialog.run_sweep()
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=10)
+    slow_sweep(model, 0.01)
+    dialog.run_sweep()
+    process_events(100)
+    dialog.cancel_sweep()
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=10)
+    assert dialog.info.text().startswith("Sweep cancelled") and "clipping" in dialog.info.text()
+    dialog.new_fit = None
+    dialog.close()
+
+
+def test_every_strip_warning_is_shown_in_full(window, monkeypatch):
+    # Once a settings problem led with the full path and the warnings after it were cut off the strip.
+    model = window.model
+    monkeypatch.setattr(model, "settings_file_problem", "Settings file zapitSystemSettings.yml has "
+                        "calibrateSample.refAp unknown, calibrateSample.refAP missing: changes made in Zapit are not "
+                        "saved to it until it is fixed")
+    monkeypatch.setattr(model, "settings_edited_outside", ["laser.laserMinMax_mW"])
+    monkeypatch.setattr(model, "settings_unread_rig_keys", ["scanners.voltsPerPixel"])
+    window._show_settings_warning()
+    process_events(50)
+    label = window.settings_warning
+    assert label.text().count("\n") == 2 and str(model.settings_path) in label.toolTip()
+    assert label.height() >= label.heightForWidth(label.width()) - 1, (label.height(), label.heightForWidth(label.width()))
+
+
 def test_a_closed_editor_is_deleted_when_a_new_one_opens(window):
     window.new_stim_config()
     old = window._config_editor
@@ -766,7 +826,8 @@ def test_unedited_settings_warning(app):
     try:
         process_events(20)
         assert win.settings_warning.isVisible()
-        assert str(model.settings_path) in win.settings_warning.text()
+        assert model.settings_path.name in win.settings_warning.text()
+        assert str(model.settings_path) in win.settings_warning.toolTip()
     finally:
         win.shutdown()
         win.close()

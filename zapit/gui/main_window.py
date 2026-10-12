@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         row.addWidget(self.tabs, 0)
         column.addLayout(row, 1)
         column.addWidget(self._build_strip(server, server_message))
+        column.addWidget(self.settings_warning)   # full width under the strip, as tall as its warnings
         self.setCentralWidget(central)
 
         self.state_label = QLabel()
@@ -167,14 +168,15 @@ class MainWindow(QMainWindow):
         self.settings_warning = QLabel()
         self.settings_warning.setStyleSheet(WARNING_STYLE)
         self.settings_warning.setWordWrap(True)
-        self.settings_warning.setToolTip("Settings: Help, Open settings folder; every key is in Help, "
-                                         "Documentation, Settings reference. Laser fit: File, Laser calibration")
+        self.settings_warning.setToolTip(f"Settings file: {self.model.settings_path}. Help, Open settings folder "
+                                         f"opens it; every key is in Help, Documentation, Settings reference. Laser "
+                                         f"fit: File, Laser calibration")
         self._show_settings_warning()
         layout.addWidget(self.scanners_lamp)
         layout.addWidget(self.sample_lamp)
         layout.addWidget(self.config_label)
         layout.addWidget(self.server_label)
-        layout.addWidget(self.settings_warning, 1)
+        layout.addStretch(1)
         return strip
 
     def fit_to_screen(self):
@@ -434,9 +436,13 @@ class MainWindow(QMainWindow):
         wait for a restart, and a laser fit in use that may map power wrongly."""
         parts = []
         if self.model.settings_unedited:
-            parts.append(f"Settings file {self.model.settings_path} still holds the placeholder "
+            parts.append(f"Settings file {self.model.settings_path.name} still holds the placeholder "
                          f"{settings_mod.rig_keys_text()}: stimulation is refused until they are set for this "
                          f"rig and Zapit is restarted")
+        elif self.model.settings_unread_rig_keys:
+            parts.append(f"Stimulation is refused: the settings file gave no valid "
+                         f"{', '.join(self.model.settings_unread_rig_keys)} at start-up, so the placeholder is in "
+                         f"use. Fix the file and restart Zapit")
         if self.model.settings_file_problem:
             parts.append(self.model.settings_file_problem)
         if self.model.settings_edited_outside:
@@ -447,7 +453,7 @@ class MainWindow(QMainWindow):
         if fit_problem:
             parts.append(f"The laser fit in use may map power wrongly ({fit_problem}): run a new sweep (File, "
                          f"Laser calibration)")
-        self.settings_warning.setText(". ".join(parts))
+        self.settings_warning.setText("\n".join(parts))   # one line each, so none is cut off by the others
         self.settings_warning.setVisible(bool(parts))
 
     def update_title(self):
@@ -561,9 +567,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         losses = []
+        dialog = self._laser_dialog
         if self.laser_sweep_running():
             losses.append("A laser sweep is running and will be cancelled.")
-        elif self._laser_dialog is not None and self._laser_dialog.new_fit is not None:
+        if dialog is not None and dialog.new_fit is not None:
             losses.append("The new laser fit has not been saved and is not in use; it will be discarded.")
         editor = self._config_editor
         if editor is not None and editor.isVisible() and editor.unsaved:
@@ -572,7 +579,10 @@ class MainWindow(QMainWindow):
         if self.dialogs_enabled and not self.ask("Quit Zapit", question):
             event.ignore()
             return
+        # Asked above: a second question from either window would be ignored, or leave it open with the app shut down.
+        if dialog is not None:
+            dialog.close_discarding()
         if editor is not None:
-            editor.close_discarding()   # asked above; a second question could leave it open with the app shut down
+            editor.close_discarding()
         self.shutdown()
         event.accept()

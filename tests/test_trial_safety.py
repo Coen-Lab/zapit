@@ -172,6 +172,14 @@ def test_unedited_rig_settings_block_stimulation(ready_model):
         ready_model.zap_all_coords()
 
 
+def test_a_rig_key_the_settings_file_did_not_give_blocks_stimulation(ready_model):
+    ready_model.settings_unread_rig_keys = ["laser.laserMinMax_mW"]   # what a rig sets when start-up finds a typo
+    with pytest.raises(NotReadyError, match="no valid laser.laserMinMax_mW"):
+        ready_model.send_samples(condition=1)
+    with pytest.raises(NotReadyError, match="no valid laser.laserMinMax_mW"):
+        ready_model.zap_all_coords()
+
+
 def test_config_load_refused_during_a_trial(ready_model, data_dir):
     ready_model.send_samples(condition=4, hardware_triggered=True)
     with pytest.raises(NotReadyError, match="config"):

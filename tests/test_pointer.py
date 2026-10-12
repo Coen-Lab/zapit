@@ -87,7 +87,7 @@ def test_sample_calibration_maps_outline(model):
 
 
 def test_laser_calibration_curve(model):
-    fit = model.generate_laser_calibration_curve(step=0.25)
+    fit = model.generate_laser_calibration_curve(points=21)
     assert fit.fit_type in ("poly3", "sigmoid") and fit.problem() is None
     assert model.laser.fit is None                     # shown, not used, until it is saved
     model.laser.fit = fit
@@ -102,7 +102,7 @@ def test_a_saved_laser_fit_is_the_one_in_use(data_dir, tmp_path):
     shutil.copyfile(data_dir / "settings_test.yml", tmp_path / "zapitSystemSettings.yml")
     m = Zapit(simulated=True, settings_path=tmp_path / "zapitSystemSettings.yml", start_camera=False)
     try:
-        fit = m.generate_laser_calibration_curve(step=0.25)
+        fit = m.generate_laser_calibration_curve(points=21)
         m.save_laser_fit(fit)
         assert m.laser.fit is fit and (tmp_path / "laserFit.yml").exists()
     finally:
@@ -113,7 +113,7 @@ def test_a_sweep_without_the_photodiode_is_refused(model):
     # Once a noise-only sweep went straight into use and 2 mW became a fifth of that, unsaved.
     model.daq.ai_source = lambda ch: float(np.random.default_rng().normal()) * 0.01
     with pytest.raises(ValueError, match="photodiode"):
-        model.generate_laser_calibration_curve(step=0.05)
+        model.generate_laser_calibration_curve(points=101)
     assert model.laser.fit is None and model.daq.laser_volts == 0
 
 
@@ -211,6 +211,57 @@ def test_an_invalid_hand_edit_is_never_corrected_over_the_rig_values(name, edit,
         m.update_setting("calibrateScanners", "calibration_power_mW", 4.0)
         assert m.settings_file_problem is None
         assert yaml.safe_load(path.read_text())["calibrateScanners"]["calibration_power_mW"] == 4.0
+    finally:
+        m.close()
+
+
+def test_a_change_made_while_the_file_is_broken_is_saved_once_it_is_fixed(data_dir, tmp_path, monkeypatch):
+    # Once it was never written, and the strip then called it a hand edit that a restart would bring in.
+    import shutil
+
+    import yaml
+
+    from zapit.pointer import Zapit
+    path = tmp_path / "zapitSystemSettings.yml"
+    shutil.copyfile(data_dir / "settings_test.yml", path)
+    monkeypatch.setenv("ZAPIT_SETTINGS", str(tmp_path))
+    m = Zapit(simulated=True, start_camera=False)
+    try:
+        good = path.read_text()
+        path.write_text(good.replace("refAP: 3.0", "refAp: 3.0"))
+        m.update_setting("camera", "default_exposure", 999.0)
+        path.write_text(good)                                              # fixed by hand
+        m.update_setting("calibrateScanners", "bufferMM", 4.0)
+        on_disk = yaml.safe_load(path.read_text())
+        assert on_disk["camera"]["default_exposure"] == 999.0 and on_disk["calibrateScanners"]["bufferMM"] == 4.0
+        assert m.settings_edited_outside == [] and m.settings_file_problem is None
+    finally:
+        m.close()
+
+
+@pytest.mark.parametrize("name, edit", [
+    ("a value mistyped", lambda text: text.replace("laserMinMax_mW: [0.05, 57.0]", "laserMinMax_mW: [0.05, 57.0mW]")),
+    ("a key mistyped", lambda text: text.replace("laserMinMax_mW:", "laserMinMax_mw:")),
+    ("a range reversed", lambda text: text.replace("laserMinMax_mW: [0.05, 57.0]", "laserMinMax_mW: [57.0, 0.05]")),
+    ("a YAML error", lambda text: text.replace("laserMinMax_mW: [0.05, 57.0]", "laserMinMax_mW: [0.05, 57.0")),
+])
+def test_a_typo_left_over_a_restart_blocks_stimulation_and_is_never_written(name, edit, data_dir, tmp_path,
+                                                                             monkeypatch):
+    # Once start-up put the 75 mW placeholder in use for trials and wrote it over the file, saying so only on
+    # the console.
+    from zapit import settings as settings_mod
+    from zapit.pointer import Zapit
+    path = tmp_path / "zapitSystemSettings.yml"
+    path.write_text(edit((data_dir / "settings_test.yml").read_text()))
+    before = path.read_text()
+    assert "laser.laserMinMax_mW" in settings_mod.read_settings(path).unread_rig_keys, name
+    monkeypatch.setenv("ZAPIT_SETTINGS", str(tmp_path))
+    m = Zapit(simulated=True, start_camera=False)   # a rig (not simulated) also refuses to stimulate: test_trial_safety
+    try:
+        assert path.read_text() == before and not (tmp_path / "backups").exists(), name
+        assert m.settings["laser"]["laserMinMax_mW"] == [0.0, 75.0] and m.settings_file_problem, name
+        m.update_setting("camera", "default_exposure", 999.0)            # nothing written to a broken file
+        assert path.read_text() == before, name
     finally:
         m.close()
 

@@ -61,7 +61,7 @@ def test_old_settings_file_is_refused_naming_the_script(data_dir, tmp_path):
     p = tmp_path / s.SETTINGS_FILENAME
     p.write_bytes((data_dir / "legacy_rig" / s.SETTINGS_FILENAME).read_bytes())
     try:
-        s.load_settings(p, write_back=True)
+        s.load_settings(p)
     except s.OldSettingsError as e:
         assert "migrate_rig.py" in str(e) and "tcpServer" in str(e)
     else:
@@ -69,14 +69,29 @@ def test_old_settings_file_is_refused_naming_the_script(data_dir, tmp_path):
     assert p.read_bytes() == (data_dir / "legacy_rig" / s.SETTINGS_FILENAME).read_bytes()   # left untouched
 
 
-def test_load_writes_back_and_backs_up(tmp_path):
+def test_load_never_corrects_the_file(tmp_path):
+    # Once a typo in a rig key at start-up put the 75 mW placeholder in use and wrote it over the file.
     p = tmp_path / "zapitSystemSettings.yml"
-    p.write_text(yaml.safe_dump({"NI": {"device_ID": "Dev9"}}))
-    out = s.load_settings(p, write_back=True)
-    assert out["NI"]["device_ID"] == "Dev9"
-    reloaded = yaml.safe_load(p.read_text())
-    assert "laser" in reloaded and reloaded["NI"]["device_ID"] == "Dev9"
-    assert list((tmp_path / "backups").glob("*.yml"))
+    p.write_text(yaml.safe_dump({"NI": {"device_ID": "Dev9"}, "laser": {"laserMinMax_mw": [0, 40]}}))
+    before = p.read_text()
+    read = s.read_settings(p)
+    assert read.settings["NI"]["device_ID"] == "Dev9" and p.read_text() == before
+    assert "laser.laserMinMax_mw unknown" in read.problem and "laser.laserMinMax_mW missing" in read.problem
+    assert read.unread_rig_keys == ["laser.laserMinMax_mW", "scanners.voltsPerPixel", "camera.micronsPerPixel"]
+    assert s.load_settings(p)["NI"]["device_ID"] == "Dev9" and p.read_text() == before
+    p.write_text("laser: [unclosed\n")
+    read = s.read_settings(p)
+    assert "could not be read" in read.problem and len(read.unread_rig_keys) == 3
+
+
+@pytest.mark.parametrize("key", ["laserMinMax_mW", "laserMinMaxControlVolts"])
+@pytest.mark.parametrize("pair", [[57.0, 0.05], [5.0, 5.0]])
+def test_a_laser_range_must_rise(key, pair):
+    # Once [57, 0.05] mW was accepted and 5 mW requested drove 4.57 V; [5, 5] divided by zero at the trial.
+    d = s.default_settings()
+    d["laser"][key] = pair
+    _, valid = s.validate(d)
+    assert not valid
 
 
 def test_laser_fit_prefers_sigmoid_for_saturating_data(tmp_path):
@@ -120,6 +135,30 @@ def delivered_errors(lo, hi, curve, noise, requests=(1, 2, 5, 10, 19), seed=0):
     cal = LaserCalibration([lo, hi], [0, 20], fit)
     true_mw = (curve(x) - curve(x).min()) / (curve(x).max() - curve(x).min()) * 20
     return fit, [float(np.interp(cal.mw_to_control(mw, warn=None), x, true_mw)) - mw for mw in requests]
+
+
+def test_a_narrow_control_range_is_swept_finely_enough_for_low_power(data_dir, tmp_path):
+    # A 0-1 V laser swept at 25 mV was 41 points: at 1% noise a request of 0.5 to 2 mW was off by over half in
+    # 21 of 40 seeds.
+    import shutil
+
+    from zapit.pointer import Zapit
+    shutil.copyfile(data_dir / "settings_test.yml", tmp_path / s.SETTINGS_FILENAME)
+    m = Zapit(simulated=True, settings_path=tmp_path / s.SETTINGS_FILENAME, start_camera=False)
+    curve = lambda v: np.clip((v - 0.4) / 0.6, 0, None)
+    try:
+        off = 0
+        for seed in range(10):
+            rng = np.random.default_rng(seed)
+            m.daq.ai_source = lambda ch: float(curve(m.daq.laser_volts) + rng.normal(0, 0.01))
+            fit = m.generate_laser_calibration_curve(min_max_volts=(0.0, 1.0))
+            assert len(fit.control_values) == 201
+            cal = LaserCalibration([0, 1], [0, 20], fit)
+            got = [20 * curve(cal.mw_to_control(mw, warn=None)) for mw in (0.5, 1, 2)]
+            off += any(abs(g - mw) > 0.5 * mw for g, mw in zip(got, (0.5, 1, 2)))
+        assert off <= 1, off
+    finally:
+        m.close()
 
 
 def test_a_short_sweep_keeps_its_threshold():
