@@ -29,7 +29,9 @@ DOCS = (
 
 QUICK_START = """\
 <p><b>Once per rig:</b> wire the DAQ (Help, Hardware and wiring), set the rig's values in the settings
-file (Help, Open settings folder) and restart Zapit to use them. For a non-linear laser, run File, Laser
+file (Help, Open settings folder) and restart Zapit to use them. A mistake in the file is named on the
+yellow strip under the view, and a rig value it leaves unset stops stimulation until the file is fixed and
+Zapit restarted. For a non-linear laser, run File, Laser
 calibration with a photodiode on AI0 and press Save and use fit.</p>
 <p><b>Each session:</b></p>
 <ol>
@@ -90,7 +92,8 @@ def build_help_menu(window, menu: QMenu):
     menu.addSeparator()
     window._add_action(menu, "Open settings folder", lambda: open_settings_folder(window),
                        tip=f"Open {window.model.settings_path.parent}, which holds the settings file and the "
-                           f"laser fit. Edits to the settings file take effect when Zapit restarts")
+                           f"laser fit. Edits to the settings file take effect when Zapit restarts; a mistake "
+                           f"in one is named on the yellow strip and never corrected in the file")
     window._add_action(menu, "Zapit on GitHub", lambda: webbrowser.open(REPO_URL), tip=REPO_URL)
     menu.addSeparator()
     window._add_action(menu, "About Zapit...", lambda: show_text(window, "About Zapit", about(window)),

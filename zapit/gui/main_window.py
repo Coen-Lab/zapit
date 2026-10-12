@@ -206,7 +206,8 @@ class MainWindow(QMainWindow):
         self._add_action(file_menu, "Laser calibration...", self.open_laser_dialog,
                          tip="Measure the laser's power curve with a photodiode on AI0 and fit it")
         file_menu.addSeparator()
-        self._add_action(file_menu, "Quit", self.close, "Ctrl+Q", tip="Close Zapit and set the outputs to 0 V")
+        self._add_action(file_menu, "Quit", self.close, "Ctrl+Q", tip="Close Zapit and set the outputs to 0 V. Asks first, naming a running laser sweep, "
+                             "an unsaved laser fit or unsaved editor conditions")
         build_help_menu(self, self.menuBar().addMenu("&Help"))
 
     def _add_action(self, menu: QMenu, text: str, slot, shortcut: str | None = None,
