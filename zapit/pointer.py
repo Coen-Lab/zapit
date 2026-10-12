@@ -77,6 +77,7 @@ class Zapit:
         # A rig must not stimulate on the placeholder laser range and scales; simulation may.
         self.settings_unedited = not simulated and settings_mod.is_unedited_default(self.settings)
         self.settings_edited_outside: list[str] = []   # keys changed in the file by hand since start-up
+        self.settings_file_problem: str | None = None  # why GUI changes are not being saved to the file
 
         # Observable state
         self.on_state = Signal("state")
@@ -202,16 +203,25 @@ class Zapit:
     def update_setting(self, section: str, key: str, value):
         """Set one key, in use now and in the settings file. Only that key is written: the file is read again
         first, so a hand edit made while Zapit runs is kept there; it takes effect at the next start, and
-        ``settings_edited_outside`` names the keys that differ until then."""
+        ``settings_edited_outside`` names the keys that differ until then. A file that is not valid settings
+        is left alone, and ``settings_file_problem`` says why until a write succeeds."""
         self.settings[section][key] = value
         if self._settings_read_only:
             return
-        on_disk = settings_mod.write_setting(self.settings_path, section, key, value, self.settings)
-        edited = settings_mod.differing_keys(on_disk, self.settings) if on_disk is not None else []
-        if edited and edited != self.settings_edited_outside:
-            print(f"WARNING: {self.settings_path} was edited while Zapit runs ({', '.join(edited)}); the edits "
-                  f"are kept and take effect when Zapit restarts")
-        self.settings_edited_outside = edited
+        try:
+            on_disk = settings_mod.write_setting(self.settings_path, section, key, value, self.settings)
+        except settings_mod.SettingsFileError as e:
+            problem = f"{e}: changes made in Zapit are not saved to it until it is fixed"
+            if problem != self.settings_file_problem:
+                print(f"WARNING: {problem}")
+            self.settings_file_problem = problem
+        else:
+            edited = settings_mod.differing_keys(on_disk, self.settings)
+            if edited and edited != self.settings_edited_outside:
+                print(f"WARNING: {self.settings_path} was edited while Zapit runs ({', '.join(edited)}); the "
+                      f"edits are kept and take effect when Zapit restarts")
+            self.settings_edited_outside = edited
+            self.settings_file_problem = None
         self.on_settings.emit(self.settings)
 
     @property

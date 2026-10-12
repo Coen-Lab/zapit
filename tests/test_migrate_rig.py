@@ -33,6 +33,23 @@ def test_settings_and_laser_fit_convert(data_dir, tmp_path):
     s.load_settings(dst / s.SETTINGS_FILENAME)                 # the app reads the result without complaint
 
 
+def test_a_threshold_laser_sweep_converts_to_the_monotone_curve(data_dir, tmp_path):
+    import numpy as np
+    from scipy.io import savemat
+
+    from zapit.laser import LaserCalibration
+    src = tmp_path / "old"
+    shutil.copytree(data_dir / "legacy_rig", src)
+    x = np.arange(0, 5 + 1e-9, 0.025)
+    y = np.clip((x - 1.5) / 3.5, 0, None) + np.random.default_rng(0).normal(0, 0.005, len(x))
+    savemat(src / "laserFit.mat", {"laserFit": {"controlValues": x, "sensorValues": y}})
+    report = migrate_rig.migrate_settings(src, tmp_path / "new")
+    fit = LaserFit.load(tmp_path / "new" / "laserFit.yml")
+    assert fit.fit_type == "monotone" and not any("WARNING" in line for line in report)
+    cal = LaserCalibration([0, 5], [0, 20], fit)
+    assert cal.mw_to_control(1, warn=None) == pytest.approx(1.5 + 3.5 / 20, abs=0.05)
+
+
 def test_in_place_migration_never_says_to_delete_its_folder(data_dir, tmp_path, capsys):
     shutil.copytree(data_dir / "legacy_rig", tmp_path, dirs_exist_ok=True)
     assert migrate_rig.main(["--from", str(tmp_path), "--to", str(tmp_path)]) == 0

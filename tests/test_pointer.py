@@ -175,6 +175,42 @@ def test_a_hand_edit_of_the_settings_file_survives_the_gui_writing_it(data_dir, 
         path.write_text("laser: [unclosed\n")                             # an edit half done
         m.update_setting("calibrateScanners", "calibration_power_mW", 4.0)
         assert path.read_text() == "laser: [unclosed\n"
+        assert "not saved" in m.settings_file_problem
+    finally:
+        m.close()
+
+
+@pytest.mark.parametrize("name, edit, named", [
+    ("a value mistyped", lambda raw: raw["laser"].update(laserMinMax_mW=[0.0, 18.5, 30]), "laser.laserMinMax_mW invalid"),
+    ("a key mistyped", lambda raw: raw["scanners"].update(voltsPerPixl=raw["scanners"].pop("voltsPerPixel")),
+     "scanners.voltsPerPixl unknown"),
+    ("the file emptied", lambda raw: raw.clear(), "holds no settings"),
+    ("a section dropped", lambda raw: raw.pop("general"), "general missing"),
+])
+def test_an_invalid_hand_edit_is_never_corrected_over_the_rig_values(name, edit, named, data_dir, tmp_path,
+                                                                     monkeypatch):
+    # Once the next GUI change put the shipped placeholders over the rig's values, saying the edits were kept.
+    import shutil
+
+    import yaml
+
+    from zapit.pointer import Zapit
+    path = tmp_path / "zapitSystemSettings.yml"
+    shutil.copyfile(data_dir / "settings_test.yml", path)
+    monkeypatch.setenv("ZAPIT_SETTINGS", str(tmp_path))
+    m = Zapit(simulated=True, start_camera=False)
+    try:
+        raw = yaml.safe_load(path.read_text())
+        edit(raw)
+        path.write_text(yaml.safe_dump(raw) if raw else "")
+        before = path.read_text()
+        m.update_setting("calibrateScanners", "calibration_power_mW", 3.5)
+        assert path.read_text() == before and not (tmp_path / "backups").exists(), name
+        assert named in m.settings_file_problem and m.settings_edited_outside == [], name
+        shutil.copyfile(data_dir / "settings_test.yml", path)              # fixed by hand
+        m.update_setting("calibrateScanners", "calibration_power_mW", 4.0)
+        assert m.settings_file_problem is None
+        assert yaml.safe_load(path.read_text())["calibrateScanners"]["calibration_power_mW"] == 4.0
     finally:
         m.close()
 

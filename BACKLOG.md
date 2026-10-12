@@ -70,3 +70,11 @@
 - The Help boxes are 400 px wide `QMessageBox`es: readable with real fonts, and they stay open beside the window.
 - Documentation links open `main` on GitHub, not the installed version: the repo is public and the docs change with the code.
 - The 30 s wait for a sweep on quit: a sweep step lasts about 0.1 s, so the wait ends within one step.
+
+## Audit 2026-10-12 (eighth, on e70d48e): not recommended (steelman holds)
+
+- The strip reports a hand edit only at the next GUI change, with no file watcher: Quick start says to restart after editing, so a watcher adds machinery for a notice the user already has.
+- Every spinner step writes the settings file: the file is small and a write takes milliseconds; catching the file mid-save now leaves it alone (H1).
+- A read-only `--settings` model does not emit `on_settings`: unchanged behaviour, and the widget that made the change already shows it.
+- The monotone curve flattens a mode-hop dip rather than refusing it: no worse than the cubic, which smoothed through it.
+- YAML comments in the settings file are lost on each GUI write: the file is app-written, and this predates the one-key writes.

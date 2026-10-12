@@ -167,8 +167,8 @@ class MainWindow(QMainWindow):
         self.settings_warning = QLabel()
         self.settings_warning.setStyleSheet(WARNING_STYLE)
         self.settings_warning.setWordWrap(True)
-        self.settings_warning.setToolTip("Help, Open settings folder; every key is in Help, Documentation, "
-                                         "Settings reference")
+        self.settings_warning.setToolTip("Settings: Help, Open settings folder; every key is in Help, "
+                                         "Documentation, Settings reference. Laser fit: File, Laser calibration")
         self._show_settings_warning()
         layout.addWidget(self.scanners_lamp)
         layout.addWidget(self.sample_lamp)
@@ -234,6 +234,9 @@ class MainWindow(QMainWindow):
             old.raise_()
             old.activateWindow()
             return
+        if old is not None:
+            old.deleteLater()
+            self._config_editor = None
         try:
             from zapit.gui.config_editor import StimConfigEditor
         except Exception as e:  # the editor is a separate module that may be missing or broken
@@ -296,7 +299,8 @@ class MainWindow(QMainWindow):
         if old is not None:
             old.deleteLater()
         self._laser_dialog = LaserDialog(self.model, self, before_sweep=self.prepare_laser_sweep,
-                                         on_sweep=self._lock_for_sweep, ask=self.ask, notify=self.notify)
+                                         on_sweep=self._lock_for_sweep, on_saved=self._show_settings_warning,
+                                         ask=self.ask, notify=self.notify)
         self._laser_dialog.set_trial_locked(self.trial_locked)
         self._laser_dialog.show()
 
@@ -426,15 +430,23 @@ class MainWindow(QMainWindow):
         self._show_settings_warning()
 
     def _show_settings_warning(self):
-        """The strip's warning: placeholder rig values, and hand edits that wait for a restart."""
+        """The strip's warning: placeholder rig values, a settings file Zapit cannot write to, hand edits that
+        wait for a restart, and a laser fit in use that may map power wrongly."""
         parts = []
         if self.model.settings_unedited:
             parts.append(f"Settings file {self.model.settings_path} still holds the placeholder "
                          f"{settings_mod.rig_keys_text()}: stimulation is refused until they are set for this "
                          f"rig and Zapit is restarted")
+        if self.model.settings_file_problem:
+            parts.append(self.model.settings_file_problem)
         if self.model.settings_edited_outside:
             parts.append(f"The settings file was edited while Zapit runs "
                          f"({', '.join(self.model.settings_edited_outside)}): restart Zapit to use the new values")
+        fit = self.model.laser.fit
+        fit_problem = fit.problem() if fit is not None else None
+        if fit_problem:
+            parts.append(f"The laser fit in use may map power wrongly ({fit_problem}): run a new sweep (File, "
+                         f"Laser calibration)")
         self.settings_warning.setText(". ".join(parts))
         self.settings_warning.setVisible(bool(parts))
 
@@ -548,17 +560,19 @@ class MainWindow(QMainWindow):
             self.bridge = None
 
     def closeEvent(self, event):
-        question = "Close Zapit and stop the hardware?"
+        losses = []
         if self.laser_sweep_running():
-            question = "A laser sweep is running. Cancel it, close Zapit and stop the hardware?"
+            losses.append("A laser sweep is running and will be cancelled.")
         elif self._laser_dialog is not None and self._laser_dialog.new_fit is not None:
-            question = ("The new laser fit has not been saved and is not in use. Discard it, close Zapit and "
-                        "stop the hardware?")
-        elif self._config_editor is not None and self._config_editor.isVisible() and self._config_editor.unsaved:
-            question = ("The stim config editor has unsaved conditions. Discard them, close Zapit and stop the "
-                        "hardware?")
+            losses.append("The new laser fit has not been saved and is not in use; it will be discarded.")
+        editor = self._config_editor
+        if editor is not None and editor.isVisible() and editor.unsaved:
+            losses.append("The stim config editor has unsaved conditions; they will be discarded.")
+        question = " ".join(losses + ["Close Zapit and stop the hardware?"])
         if self.dialogs_enabled and not self.ask("Quit Zapit", question):
             event.ignore()
             return
+        if editor is not None:
+            editor.close_discarding()   # asked above; a second question could leave it open with the app shut down
         self.shutdown()
         event.accept()

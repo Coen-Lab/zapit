@@ -12,7 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PyQt6")
 pytest.importorskip("pyqtgraph")
 
-from PyQt6.QtCore import Qt  # noqa: E402
+from PyQt6.QtCore import QEvent, Qt  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from zapit.gui.main_window import MainWindow  # noqa: E402
@@ -384,6 +384,58 @@ def test_a_refused_sweep_shows_what_it_measured(window):
     dialog.close()
 
 
+def test_save_never_saves_a_fit_the_plot_does_not_show(window):
+    # Once a good unsaved sweep stayed behind Save while a refused sweep's readings were plotted.
+    model = make_ready(window)
+    window.open_laser_dialog()
+    dialog = window._laser_dialog
+    dialog.run_sweep()
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=10)
+    good = dialog.new_fit
+    assert good is not None and dialog.save_btn.isEnabled()
+    slow_sweep(model, 0.01)                            # cancelled: the earlier fit is shown again, still savable
+    dialog.run_sweep()
+    process_events(100)
+    dialog.cancel_sweep()
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=10)
+    assert dialog.new_fit is good and dialog.save_btn.isEnabled() and "sweep before" in dialog.info.text()
+    assert len(dialog.measured.getData()[0]) == len(good.control_values)
+    model.daq.ai_source = lambda ch: float(np.random.default_rng().normal()) * 0.01
+    dialog.run_sweep()                                 # refused: nothing left to save
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=30)
+    assert dialog.new_fit is None and not dialog.save_btn.isEnabled()
+    dialog.close()
+
+
+def test_a_flat_topped_sweep_mentions_a_clipping_photodiode(window):
+    model = make_ready(window)
+    model.daq.ai_source = lambda ch: min(model._last_laser_volts / 3, 1.0)
+    window.open_laser_dialog()
+    dialog = window._laser_dialog
+    dialog.run_sweep()
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=10)
+    assert "stops rising at 3.00 V" in dialog.info.text() and "clipping" in dialog.info.text()
+    dialog.new_fit = None
+    dialog.close()
+
+
+def test_a_laser_fit_that_may_map_power_wrongly_is_on_the_strip(window, monkeypatch):
+    from zapit.laser import LaserFit
+    model = make_ready(window)
+    x = np.arange(0, 5 + 1e-9, 0.025)
+    model.laser.fit = LaserFit.fit(x, np.random.default_rng(0).normal(0, 0.01, len(x)))   # from before the check
+    window._show_settings_warning()
+    assert window.settings_warning.isVisible() and "laser fit in use" in window.settings_warning.text()
+    window.open_laser_dialog()
+    dialog = window._laser_dialog
+    dialog.run_sweep()
+    assert wait_until(lambda: not dialog.sweeping, timeout_s=10)
+    monkeypatch.setattr(model, "save_laser_fit", lambda fit: setattr(model.laser, "fit", fit))
+    dialog.save_btn.click()
+    assert not window.settings_warning.isVisible()
+    dialog.close()
+
+
 def test_quitting_over_unsaved_editor_conditions_asks(window):
     window.new_stim_config()
     editor = window._config_editor
@@ -398,8 +450,29 @@ def test_quitting_over_unsaved_editor_conditions_asks(window):
     finally:
         window.dialogs_enabled = False
     assert window.isVisible() and "unsaved conditions" in asked[0]
-    editor._unsaved = False
-    editor.close()
+    # Yes: one question in all. Once the editor asked again and a No left it open with the app shut down.
+    editor_asked = []
+    editor._confirm = lambda title, text: editor_asked.append(text) or False
+    window.ask = lambda title, text: asked.append(text) or True
+    window.dialogs_enabled = True
+    try:
+        window.close()
+    finally:
+        window.dialogs_enabled = False
+    assert not window.isVisible() and not editor.isVisible() and editor_asked == [] and len(asked) == 2
+
+
+def test_a_closed_editor_is_deleted_when_a_new_one_opens(window):
+    window.new_stim_config()
+    old = window._config_editor
+    gone = []
+    old.destroyed.connect(lambda: gone.append(True))
+    old.close()
+    window.new_stim_config()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    process_events(50)
+    assert window._config_editor is not old and gone == [True]
+    window._config_editor.close()
 
 
 def test_a_hand_edited_settings_file_is_flagged_for_a_restart(app, data_dir, tmp_path, monkeypatch):
@@ -423,6 +496,12 @@ def test_a_hand_edited_settings_file_is_flagged_for_a_restart(app, data_dir, tmp
         assert win.settings_warning.isVisible() and "restart" in win.settings_warning.text()
         assert "scanners.voltsPerPixel" in win.settings_warning.text()
         assert yaml.safe_load(path.read_text())["scanners"]["voltsPerPixel"] == 0.0123
+        raw["scanners"]["voltsPerPixl"] = raw["scanners"].pop("voltsPerPixel")   # a typo: never corrected over
+        path.write_text(yaml.safe_dump(raw))
+        win.scanner_panel.power.setValue(win.scanner_panel.power.value() + 5)
+        process_events(50)
+        assert "scanners.voltsPerPixl unknown" in win.settings_warning.text()
+        assert "not saved" in win.settings_warning.text()
     finally:
         win.shutdown()
         win.close()

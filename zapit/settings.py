@@ -120,6 +120,10 @@ class OldSettingsError(RuntimeError):
     """A Zapit 1.x settings file, which only scripts/migrate_rig.py converts."""
 
 
+class SettingsFileError(RuntimeError):
+    """The settings file on disk cannot take a GUI change: unreadable, 1.x, or with invalid entries."""
+
+
 def default_settings() -> dict[str, dict[str, Any]]:
     return {sec: {k: copy.deepcopy(v[0]) for k, v in leaves.items()} for sec, leaves in _SCHEMA.items()}
 
@@ -158,19 +162,25 @@ def validate(settings: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     values failing their validator replaced by the default. Booleans written as
     0/1 numbers are coerced to bool.
     """
+    out, problems = _checked(settings)
+    return out, not problems
+
+
+def _checked(settings: Any) -> tuple[dict[str, Any], list[str]]:
+    """``validate``'s clean settings and what it corrected, one entry per section or key."""
     out = default_settings()
-    valid = True
+    found: list[str] = []
     src = copy.deepcopy(settings) if isinstance(settings, dict) else {}
 
     for sec, leaves in _SCHEMA.items():
         user = src.get(sec)
         if not isinstance(user, dict):
-            valid = False
+            found.append(f"{sec} missing")
             continue
-        if set(user) != set(leaves):
-            valid = False
+        found += [f"{sec}.{key} unknown" for key in user if key not in leaves]
         for key, (default, check) in leaves.items():
             if key not in user:
+                found.append(f"{sec}.{key} missing")
                 continue
             val = user[key]
             if isinstance(val, tuple):
@@ -182,11 +192,9 @@ def validate(settings: dict[str, Any]) -> tuple[dict[str, Any], bool]:
                     val = int(val) if float(val).is_integer() else val
                 out[sec][key] = val
             else:
-                valid = False
-    for sec in src:
-        if sec not in _SCHEMA:
-            valid = False
-    return out, valid
+                found.append(f"{sec}.{key} invalid")
+    found += [f"{sec} unknown" for sec in src if sec not in _SCHEMA]
+    return out, found
 
 
 def possible_settings_dirs() -> list[Path]:
@@ -253,11 +261,12 @@ def save_settings(settings: dict[str, Any], path: str | os.PathLike) -> None:
 
 
 def write_setting(path: str | os.PathLike, section: str, key: str, value,
-                  in_use: dict[str, Any]) -> dict[str, Any] | None:
+                  in_use: dict[str, Any]) -> dict[str, Any]:
     """Write one key into the settings file as it is on disk now, so a hand edit made since start-up is kept.
 
-    A missing file is written whole from ``in_use``. A file that cannot be read as current settings (a hand
-    edit half done, or a 1.x file put back) is left alone and None returned. Returns the settings written.
+    A missing file is written whole from ``in_use``. Returns the settings written. Raises SettingsFileError,
+    leaving the file alone, when it cannot be read as valid current settings (a hand edit half done or
+    mistyped, or a 1.x file put back): correcting it would put the shipped placeholders over the rig's values.
     """
     path = Path(path)
     if not path.exists():
@@ -265,16 +274,16 @@ def write_setting(path: str | os.PathLike, section: str, key: str, value,
     else:
         try:
             with open(path, encoding="utf-8") as fh:
-                raw = yaml.safe_load(fh) or {}
+                raw = yaml.safe_load(fh)
         except (OSError, yaml.YAMLError) as e:
-            print(f"WARNING: {path} could not be read ({e}); {section}.{key} was not saved to it")
-            return None
-        if old_layout_markers(raw) or not isinstance(raw, dict):
-            print(f"WARNING: {path} is not a current settings file; {section}.{key} was not saved to it")
-            return None
-        on_disk, valid = validate(raw)
-        if not valid:
-            _backup(path, on_disk["general"]["maxSettingsBackUpFiles"])
+            raise SettingsFileError(f"{path} could not be read ({type(e).__name__})") from e
+        if old_layout_markers(raw):
+            raise SettingsFileError(f"{path} is a Zapit 1.x settings file")
+        if not isinstance(raw, dict):
+            raise SettingsFileError(f"{path} holds no settings")
+        on_disk, found = _checked(raw)
+        if found:
+            raise SettingsFileError(f"{path} has {', '.join(found)}")
     on_disk[section][key] = copy.deepcopy(value)
     save_settings(on_disk, path)
     return on_disk

@@ -19,16 +19,24 @@ from pathlib import Path
 import numpy as np
 import yaml
 from scipy.optimize import curve_fit
+from scipy.signal import savgol_filter
 
 # A usable sweep: the fit's error is under a tenth of the range it rises over, and it never falls by more
 # than a twentieth of that range (a cubic can dip a little at a laser's threshold).
 MAX_RMSE_FRACTION = 0.1
 MAX_DIP_FRACTION = 0.05
-# A formula fit is kept while its error is within this many times the readings' noise (or a thousandth of the
-# range, for clean data); beyond that it misses the curve's shape and the monotone curve is used.
-FORMULA_NOISE_FACTOR = 1.5
-FORMULA_MIN_TOLERANCE = 1e-3
-SMOOTH_POINTS = 7   # moving-average width of the monotone curve: 150 mV at 25 mV steps
+# A formula fit is kept while its residuals, averaged over the smoothing window, stay within this many standard
+# errors of the readings' noise everywhere; a local run beyond that (a lasing threshold, a saturation corner) is
+# shape the formula misses, and the monotone curve is used. The noise is taken as at least a thousandth of the
+# range, for clean data.
+FORMULA_NOISE_FACTOR = 5.0
+NOISE_FLOOR_FRACTION = 1e-3
+# Moving-average width of the monotone curve: 150 mV at 25 mV steps, and at most a tenth of the sweep, so a short
+# sweep (a narrow laser.laserMinMaxControlVolts) keeps its threshold corner.
+SMOOTH_POINTS = 7
+# A curve that stays within this fraction of its top over more than a tenth of the sweep is reported as
+# saturating: the laser's, or a clipping photodiode's, which the readings cannot tell apart.
+FLAT_TOP_FRACTION = 0.01
 
 
 def _sigmoid(x, a, b, c, d):
@@ -61,11 +69,26 @@ def _isotonic(y: np.ndarray) -> np.ndarray:
     return np.repeat(vals, counts)
 
 
+def _window(n: int) -> int:
+    """Odd smoothing width for a sweep of ``n`` points: ``SMOOTH_POINTS``, at most a tenth of the sweep."""
+    k = max(1, min(SMOOTH_POINTS, n // 10))
+    return k - (1 - k % 2)
+
+
 def _monotone(y: np.ndarray) -> np.ndarray:
-    """A moving average of the readings, made non-decreasing."""
-    k = min(SMOOTH_POINTS, len(y) - (1 - len(y) % 2))   # odd, and no longer than the sweep
-    padded = np.pad(y, k // 2, mode="edge")
-    return _isotonic(np.convolve(padded, np.ones(k) / k, mode="valid"))
+    """A moving average of the readings, made non-decreasing. The ends are a straight-line fit over the window
+    rather than an average padded with the end reading, which would pull the ends towards the middle."""
+    k = _window(len(y))
+    smooth = savgol_filter(y, k, 1, mode="interp") if k >= 3 else y
+    return _isotonic(smooth)
+
+
+def _misses_shape(y: np.ndarray, fitted: np.ndarray) -> bool:
+    """True when a formula's residuals run to one side somewhere, beyond what the readings' noise explains."""
+    k = max(3, _window(len(y)))
+    local = np.convolve(np.pad(y - fitted, k // 2, mode="edge"), np.ones(k) / k, mode="valid")
+    noise = max(_noise(y), NOISE_FLOOR_FRACTION * float(np.ptp(y)))
+    return float(np.abs(local).max()) > FORMULA_NOISE_FACTOR * noise / np.sqrt(k)
 
 
 @dataclass
@@ -81,7 +104,7 @@ class LaserFit:
     @classmethod
     def fit(cls, control_values, sensor_values) -> "LaserFit":
         """Fit a cubic and a 4-parameter logistic and keep the better one if it follows the readings to
-        within their noise; otherwise use the smoothed monotone curve."""
+        within their noise and can map power; otherwise use the smoothed monotone curve."""
         x = np.asarray(control_values, dtype=float).ravel()
         y = np.asarray(sensor_values, dtype=float).ravel()
         if x.shape != y.shape:
@@ -106,13 +129,16 @@ class LaserFit:
         except (RuntimeError, ValueError):
             pass  # keep the polynomial
 
-        tolerance = max(FORMULA_NOISE_FACTOR * _noise(y), FORMULA_MIN_TOLERANCE * float(np.ptp(y)))
-        if best[1] > tolerance and np.all(np.diff(x) > 0):
-            mono = _monotone(y)
-            best = ("monotone", float(np.sqrt(np.mean((mono - y) ** 2))), mono.tolist(), mono)
-
         fit_type, rmse, coefs, pred = best
-        return cls(x, y, np.asarray(pred, dtype=float), fit_type, rmse, coefs)
+        formula = cls(x, y, np.asarray(pred, dtype=float), fit_type, rmse, coefs)
+        if not np.all(np.diff(x) > 0):
+            return formula
+        curve = _monotone(y)
+        mono = cls(x, y, curve, "monotone", float(np.sqrt(np.mean((curve - y) ** 2))), curve.tolist())
+        # A noisy threshold laser can leave the formula within the noise overall yet dipping at the corner.
+        if _misses_shape(y, formula.fitted_sensor_values) or (formula.problem() and not mono.problem()):
+            return mono
+        return formula
 
     def problem(self) -> str | None:
         """Why this fit cannot map power, or None. Power is read off the fitted curve by interpolation,
@@ -128,6 +154,17 @@ class LaserFit:
         if dip > MAX_DIP_FRACTION * span:
             return f"The fitted curve falls by {100 * dip / span:.0f}% of its range part of the way up"
         return None
+
+    def flat_top_volts(self) -> float | None:
+        """The control voltage from which the curve stays within ``FLAT_TOP_FRACTION`` of its top, when that
+        stretch is over a tenth of the sweep; otherwise None."""
+        f = np.asarray(self.fitted_sensor_values, dtype=float)
+        x = np.asarray(self.control_values, dtype=float)
+        span = float(f.max() - f.min())
+        if span <= 0:
+            return None
+        first = int(np.argmax(f >= f.max() - FLAT_TOP_FRACTION * span))
+        return float(x[first]) if x[-1] - x[first] > 0.1 * (x[-1] - x[0]) else None
 
     def evaluate(self, control_values) -> np.ndarray:
         x = np.asarray(control_values, dtype=float)

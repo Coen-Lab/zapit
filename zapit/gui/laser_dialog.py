@@ -24,18 +24,21 @@ REFUSED_PEN = pg.mkPen("r", width=2, style=Qt.PenStyle.DashLine)
 class LaserDialog(QDialog):
     """Run and inspect the laser control-voltage to sensor-reading curve."""
 
-    def __init__(self, model, parent=None, before_sweep=None, on_sweep=None, ask=None, notify=None):
+    def __init__(self, model, parent=None, before_sweep=None, on_sweep=None, on_saved=None, ask=None,
+                 notify=None):
         """``before_sweep`` runs on the GUI thread before each sweep and returns an error text to refuse it,
         or None; the main window's ``prepare_laser_sweep`` stops a check pattern or point mode first.
         ``on_sweep(running)`` is called when a sweep starts and when it has ended: the main window locks its
         controls for the sweep's whole life, because any of them would take the laser line and corrupt the
         fit. While a sweep runs the dialog cannot be closed (Esc included); Cancel sweep stops it.
-        ``ask(title, text) -> bool`` and ``notify(title, text, kind)`` default to message boxes."""
+        ``on_saved()`` is called once a new fit is in use. ``ask(title, text) -> bool`` and
+        ``notify(title, text, kind)`` default to message boxes."""
         super().__init__(parent)
         self.model = model
         self.worker: Worker | None = None
         self.before_sweep = before_sweep
         self.on_sweep = on_sweep
+        self.on_saved = on_saved
         self.ask = ask or self._ask
         self.notify = notify or self._notify
         self.trial_locked = False
@@ -101,6 +104,10 @@ class LaserDialog(QDialog):
         problem = None if new else fit.problem()
         if problem:   # a fit saved before the check existed, or brought over from Zapit 1.x
             what += f". WARNING: {problem}; run a new sweep"
+        flat = fit.flat_top_volts()
+        if flat is not None:
+            what += (f". The reading stops rising at {flat:.2f} V: if the laser itself does not saturate there, "
+                     f"the photodiode is clipping, so lower its gain and sweep again")
         self.info.setText(what)
 
     def set_trial_locked(self, locked: bool):
@@ -153,8 +160,10 @@ class LaserDialog(QDialog):
     def _sweep_done(self, fit):
         self._end_sweep()
         if fit is None:
-            self.show_fit(self.model.laser.fit)
-            self.info.setText("Sweep cancelled; the fit in use is unchanged")
+            pending = self.new_fit is not None   # what Save and use fit would save, so it is the one shown
+            self.show_fit(self.new_fit if pending else self.model.laser.fit, new=pending)
+            self.info.setText("Sweep cancelled; the fit in use is unchanged" +
+                              ("; the unsaved fit from the sweep before is shown" if pending else ""))
             return
         self.new_fit = fit
         self.show_fit(fit, new=True)
@@ -164,6 +173,9 @@ class LaserDialog(QDialog):
         exc = self.worker.exception if self.worker is not None else None
         if isinstance(exc, LaserFitRefused):
             # Show what was measured, so the user can tell a photodiode out of the beam from a laser problem.
+            # An unsaved fit from an earlier sweep goes: Save must never save a fit the plot does not show.
+            self.new_fit = None
+            self.save_btn.setEnabled(False)
             self.measured.setData(exc.fit.control_values, exc.fit.sensor_values)
             self.fitted.setData(exc.fit.control_values, exc.fit.fitted_sensor_values)
             self.fitted.setPen(REFUSED_PEN)
@@ -184,6 +196,8 @@ class LaserDialog(QDialog):
         self.new_fit = None
         self.show_fit(self.model.laser.fit)
         self.info.setText(self.info.text() + "  (saved)")
+        if self.on_saved is not None:
+            self.on_saved()
 
     # ------------------------------------------------------------------ leaving
     def may_leave(self) -> bool:

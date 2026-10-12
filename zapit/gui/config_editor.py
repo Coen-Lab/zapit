@@ -402,6 +402,11 @@ class StimConfigEditor(QMainWindow):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.add_pattern(**dlg.values())
 
+    def close_discarding(self) -> None:
+        """Close without asking about unsaved conditions: the caller has asked already."""
+        self._unsaved = False
+        self.close()
+
     def closeEvent(self, event) -> None:
         if self.unsaved and not self._confirm("Unsaved conditions", "The conditions have not been saved. Close "
                                                                     "the editor and discard them?"):
